@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Plus, Edit2, Trash2, Search, Filter, X, Check, Calendar, User, DollarSign, CreditCard } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Plus, Edit2, Trash2, Search, X, Check, Printer, Download } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
-import { Input, Select, Checkbox } from '@/components/ui/Form'
+import { Input, Select } from '@/components/ui/Form'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
 import { fetchOrcamentos, createOrcamento, updateOrcamento, deleteOrcamento, Orcamento, OrcamentoInput } from '@/lib/supabase'
@@ -15,9 +15,17 @@ const statusOptions = [
   { value: 'Perdido', label: 'Perdido' },
 ]
 
+// Função para extrair mês/ano de uma data
+const getMesAno = (dataStr: string): string => {
+  const date = new Date(dataStr + 'T00:00:00')
+  const mes = String(date.getMonth() + 1).padStart(2, '0')
+  const ano = date.getFullYear()
+  return `${mes}/${ano}`
+}
+
 const initialFormData: OrcamentoInput = {
   data: new Date().toISOString().split('T')[0],
-  mes: '',
+  mes: getMesAno(new Date().toISOString().split('T')[0]),
   cliente: '',
   valor_proposto: 0,
   valor_fechado: 0,
@@ -32,6 +40,7 @@ export default function OrcamentosPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
   
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -40,6 +49,8 @@ export default function OrcamentosPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterMes, setFilterMes] = useState('Todos')
   const [filterStatus, setFilterStatus] = useState('Todos')
+
+  const tableRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     loadData()
@@ -84,6 +95,7 @@ export default function OrcamentosPage() {
   }
 
   const openModal = (orcamento?: Orcamento) => {
+    setFormError(null)
     if (orcamento) {
       setEditingId(orcamento.id)
       setFormData({
@@ -98,7 +110,12 @@ export default function OrcamentosPage() {
       })
     } else {
       setEditingId(null)
-      setFormData(initialFormData)
+      const hoje = new Date().toISOString().split('T')[0]
+      setFormData({
+        ...initialFormData,
+        data: hoje,
+        mes: getMesAno(hoje),
+      })
     }
     setIsModalOpen(true)
   }
@@ -107,11 +124,21 @@ export default function OrcamentosPage() {
     setIsModalOpen(false)
     setEditingId(null)
     setFormData(initialFormData)
+    setFormError(null)
+  }
+
+  const handleDataChange = (novaData: string) => {
+    setFormData({
+      ...formData,
+      data: novaData,
+      mes: getMesAno(novaData),
+    })
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
+    setFormError(null)
     
     try {
       if (editingId) {
@@ -123,7 +150,8 @@ export default function OrcamentosPage() {
       closeModal()
     } catch (err) {
       console.error('Erro ao salvar:', err)
-      alert('Erro ao salvar orçamento')
+      const message = err instanceof Error ? err.message : 'Erro ao salvar orçamento'
+      setFormError(message)
     } finally {
       setSaving(false)
     }
@@ -139,6 +167,105 @@ export default function OrcamentosPage() {
       console.error('Erro ao excluir:', err)
       alert('Erro ao excluir orçamento')
     }
+  }
+
+  const handlePrint = () => {
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Relatório de Orçamentos</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: Arial, sans-serif; padding: 20px; color: #333; }
+          h1 { text-align: center; margin-bottom: 10px; color: #059669; }
+          .info { text-align: center; margin-bottom: 20px; color: #666; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th, td { border: 1px solid #ddd; padding: 10px; text-align: left; font-size: 12px; }
+          th { background: #059669; color: white; }
+          tr:nth-child(even) { background: #f9f9f9; }
+          .status-fechado { color: #059669; font-weight: bold; }
+          .status-perdido { color: #dc2626; font-weight: bold; }
+          .totais { margin-top: 20px; padding: 15px; background: #f0fdf4; border-radius: 8px; }
+          .totais h3 { color: #059669; margin-bottom: 10px; }
+          .totais p { margin: 5px 0; }
+          @media print {
+            body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          }
+        </style>
+      </head>
+      <body>
+        <h1>📊 Relatório de Orçamentos</h1>
+        <p class="info">Gerado em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}</p>
+        
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Mês</th>
+              <th>Cliente</th>
+              <th>Valor Proposto</th>
+              <th>Valor Fechado</th>
+              <th>Status</th>
+              <th>Pagamento</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredOrcamentos.map(orc => `
+              <tr>
+                <td>${formatDate(orc.data)}</td>
+                <td>${orc.mes}</td>
+                <td>${orc.cliente}</td>
+                <td>${formatCurrency(orc.valor_proposto)}</td>
+                <td>${formatCurrency(orc.valor_fechado)}</td>
+                <td class="${orc.status === 'Fechado' ? 'status-fechado' : 'status-perdido'}">${orc.status}</td>
+                <td>${orc.parcelado ? orc.parcelas + 'x' : 'À vista'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        
+        <div class="totais">
+          <h3>Resumo</h3>
+          <p><strong>Total de orçamentos:</strong> ${filteredOrcamentos.length}</p>
+          <p><strong>Fechados:</strong> ${filteredOrcamentos.filter(o => o.status === 'Fechado').length}</p>
+          <p><strong>Perdidos:</strong> ${filteredOrcamentos.filter(o => o.status === 'Perdido').length}</p>
+          <p><strong>Valor total proposto:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_proposto, 0))}</p>
+          <p><strong>Valor total fechado:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_fechado, 0))}</p>
+        </div>
+      </body>
+      </html>
+    `
+    
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
+    }
+  }
+
+  const handleExportCSV = () => {
+    const headers = ['Data', 'Mês', 'Cliente', 'Valor Proposto', 'Valor Fechado', 'Status', 'Parcelado', 'Parcelas']
+    const rows = filteredOrcamentos.map(orc => [
+      orc.data,
+      orc.mes,
+      orc.cliente,
+      orc.valor_proposto,
+      orc.valor_fechado,
+      orc.status,
+      orc.parcelado ? 'Sim' : 'Não',
+      orc.parcelas
+    ])
+    
+    const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `orcamentos_${new Date().toISOString().split('T')[0]}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   const meses = ['Todos', ...new Set(orcamentos.map(o => o.mes))]
@@ -163,12 +290,28 @@ export default function OrcamentosPage() {
             Gerencie todos os seus orçamentos
           </p>
         </div>
-        <Button
-          onClick={() => openModal()}
-          leftIcon={<Plus className="w-5 h-5" />}
-        >
-          Novo Orçamento
-        </Button>
+        <div className="flex flex-wrap gap-3">
+          <Button
+            variant="secondary"
+            onClick={handlePrint}
+            leftIcon={<Printer className="w-4 h-4" />}
+          >
+            Imprimir
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={handleExportCSV}
+            leftIcon={<Download className="w-4 h-4" />}
+          >
+            Exportar CSV
+          </Button>
+          <Button
+            onClick={() => openModal()}
+            leftIcon={<Plus className="w-5 h-5" />}
+          >
+            Novo Orçamento
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -208,7 +351,7 @@ export default function OrcamentosPage() {
       </div>
 
       {/* Table */}
-      <div className="glass-card overflow-hidden">
+      <div className="glass-card overflow-hidden" ref={tableRef}>
         {filteredOrcamentos.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="data-table">
@@ -294,21 +437,21 @@ export default function OrcamentosPage() {
         title={editingId ? 'Editar Orçamento' : 'Novo Orçamento'}
         size="lg"
       >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="space-y-5">
+          {formError && (
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-300">
+              {formError}
+            </div>
+          )}
+          
+          {/* Data e Cliente */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input
               label="Data"
               type="date"
               required
               value={formData.data}
-              onChange={(e) => setFormData({ ...formData, data: e.target.value })}
-            />
-            <Input
-              label="Mês/Ano"
-              placeholder="01/2024"
-              required
-              value={formData.mes}
-              onChange={(e) => setFormData({ ...formData, mes: e.target.value })}
+              onChange={(e) => handleDataChange(e.target.value)}
             />
             <div className="md:col-span-2">
               <Input
@@ -319,6 +462,10 @@ export default function OrcamentosPage() {
                 onChange={(e) => setFormData({ ...formData, cliente: e.target.value })}
               />
             </div>
+          </div>
+
+          {/* Valores */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input
               label="Valor Proposto"
               type="number"
@@ -336,6 +483,10 @@ export default function OrcamentosPage() {
               value={formData.valor_fechado || ''}
               onChange={(e) => setFormData({ ...formData, valor_fechado: parseFloat(e.target.value) || 0 })}
             />
+          </div>
+
+          {/* Status e Parcelamento */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Select
               label="Status"
               required
@@ -343,28 +494,63 @@ export default function OrcamentosPage() {
               value={formData.status}
               onChange={(e) => setFormData({ ...formData, status: e.target.value as 'Fechado' | 'Perdido' })}
             />
-            <div className="space-y-4">
-              <Checkbox
-                label="Pagamento parcelado"
-                checked={formData.parcelado}
-                onChange={(e) => setFormData({ 
-                  ...formData, 
-                  parcelado: e.target.checked,
-                  parcelas: e.target.checked ? formData.parcelas : 1
-                })}
-              />
-              {formData.parcelado && (
-                <Input
-                  label="Número de Parcelas"
-                  type="number"
-                  min="1"
-                  max="60"
-                  value={formData.parcelas}
-                  onChange={(e) => setFormData({ ...formData, parcelas: parseInt(e.target.value) || 1 })}
-                />
-              )}
+            
+            {/* Parcelamento bonito */}
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Forma de Pagamento
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, parcelado: false, parcelas: 1 })}
+                  className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                    !formData.parcelado
+                      ? 'bg-primary-500/20 text-primary-400 border-2 border-primary-500'
+                      : 'bg-dark-800 text-dark-400 border-2 border-dark-700 hover:border-dark-600'
+                  }`}
+                >
+                  À Vista
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, parcelado: true, parcelas: formData.parcelas || 2 })}
+                  className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                    formData.parcelado
+                      ? 'bg-primary-500/20 text-primary-400 border-2 border-primary-500'
+                      : 'bg-dark-800 text-dark-400 border-2 border-dark-700 hover:border-dark-600'
+                  }`}
+                >
+                  Parcelado
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* Número de parcelas - só aparece se parcelado */}
+          {formData.parcelado && (
+            <div className="animate-fade-in">
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Número de Parcelas
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="2"
+                  max="24"
+                  value={formData.parcelas}
+                  onChange={(e) => setFormData({ ...formData, parcelas: parseInt(e.target.value) })}
+                  className="flex-1 h-2 bg-dark-700 rounded-lg appearance-none cursor-pointer accent-primary-500"
+                />
+                <span className="w-16 text-center py-2 px-3 rounded-lg bg-dark-800 text-primary-400 font-bold text-lg">
+                  {formData.parcelas}x
+                </span>
+              </div>
+              <p className="text-xs text-dark-500 mt-2">
+                Valor por parcela: {formatCurrency((formData.valor_fechado || formData.valor_proposto) / formData.parcelas)}
+              </p>
+            </div>
+          )}
           
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
             <Button type="button" variant="secondary" onClick={closeModal}>

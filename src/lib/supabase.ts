@@ -44,7 +44,7 @@ export async function createOrcamento(orcamento: OrcamentoInput): Promise<Orcame
 
   if (error) {
     console.error('Erro ao criar orçamento:', error)
-    throw error
+    throw new Error(error.message)
   }
 
   return data
@@ -60,7 +60,7 @@ export async function updateOrcamento(id: number, updates: Partial<OrcamentoInpu
 
   if (error) {
     console.error('Erro ao atualizar orçamento:', error)
-    throw error
+    throw new Error(error.message)
   }
 
   return data
@@ -74,6 +74,6 @@ export async function deleteOrcamento(id: number): Promise<void> {
 
   if (error) {
     console.error('Erro ao excluir orçamento:', error)
-    throw error
+    throw new Error(error.message)
   }
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { 
   LayoutDashboard, 
@@ -9,8 +10,7 @@ import {
   Settings,
   LogOut,
   Menu,
-  X,
-  Sparkles
+  X
 } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
@@ -55,8 +55,14 @@ export function Sidebar() {
           <div className="p-6 border-b border-dark-800">
             <Link href="/" className="flex items-center gap-3 group">
               <div className="relative">
-                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center shadow-glow group-hover:shadow-glow-lg transition-shadow">
-                  <Sparkles className="w-6 h-6 text-white" />
+                <div className="w-12 h-12 rounded-xl overflow-hidden shadow-glow group-hover:shadow-glow-lg transition-shadow">
+                  <Image
+                    src="/images/logo.jpeg"
+                    alt="Logo"
+                    width={48}
+                    height={48}
+                    className="w-full h-full object-cover"
+                  />
                 </div>
                 <div className="absolute -top-1 -right-1 w-3 h-3 bg-primary-400 rounded-full animate-pulse" />
               </div>
