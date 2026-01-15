@@ -3,11 +3,13 @@ import './globals.css'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
 
+const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
+
 export const metadata: Metadata = {
   title: 'Controle de Orçamentos | Sistema Profissional',
   description: 'Sistema profissional para controle e gerenciamento de orçamentos comerciais',
   icons: {
-    icon: '/favicon.ico',
+    icon: `${basePath}/favicon.ico`,
   },
 }
 
