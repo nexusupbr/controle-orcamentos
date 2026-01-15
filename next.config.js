@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
-const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
+const isProd = process.env.NODE_ENV === 'production' || process.env.GITHUB_ACTIONS === 'true'
+const basePath = isProd ? '/controle-orcamentos' : ''
 
 const nextConfig = {
   output: 'export',
