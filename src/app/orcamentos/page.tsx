@@ -268,7 +268,7 @@ export default function OrcamentosPage() {
     URL.revokeObjectURL(url)
   }
 
-  const meses = ['Todos', ...new Set(orcamentos.map(o => o.mes))]
+  const meses = ['Todos', ...Array.from(new Set(orcamentos.map(o => o.mes)))]
 
   if (loading) {
     return (

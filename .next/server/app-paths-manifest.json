@@ -1,4 +1,7 @@
 {
+  "/_not-found": "app/_not-found.js",
+  "/configuracoes/page": "app/configuracoes/page.js",
+  "/orcamentos/page": "app/orcamentos/page.js",
   "/page": "app/page.js",
-  "/orcamentos/page": "app/orcamentos/page.js"
+  "/resumo/page": "app/resumo/page.js"
 }
