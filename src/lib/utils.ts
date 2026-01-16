@@ -29,3 +29,38 @@ export function calcConversionRate(fechados: number, total: number): number {
   if (!total || total === 0) return 0
   return (fechados / total) * 100
 }
+
+// Formata número para o padrão brasileiro (1.480,90)
+export function formatNumberBR(value: number | string): string {
+  const num = typeof value === 'string' ? parseFloat(value) || 0 : value
+  return num.toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+// Converte string formatada (1.480,90) para número
+export function parseNumberBR(value: string): number {
+  if (!value) return 0
+  // Remove pontos (separador de milhar) e troca vírgula por ponto
+  const cleaned = value.replace(/\./g, '').replace(',', '.')
+  return parseFloat(cleaned) || 0
+}
+
+// Máscara de input para valores monetários
+export function maskCurrency(value: string): string {
+  // Remove tudo exceto números
+  let numbers = value.replace(/\D/g, '')
+  
+  // Se vazio, retorna vazio
+  if (!numbers) return ''
+  
+  // Converte para número e divide por 100 para ter 2 casas decimais
+  const num = parseInt(numbers) / 100
+  
+  // Formata para pt-BR
+  return num.toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}

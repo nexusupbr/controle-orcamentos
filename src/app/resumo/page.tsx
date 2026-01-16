@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Calendar, TrendingUp, TrendingDown, DollarSign, Target, BarChart3, ChevronRight } from 'lucide-react'
+import { Calendar, TrendingUp, TrendingDown, DollarSign, Target, BarChart3, ChevronRight, Printer } from 'lucide-react'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
 import { fetchOrcamentos, Orcamento } from '@/lib/supabase'
 import { formatCurrency, formatPercent, calcConversionRate } from '@/lib/utils'
@@ -18,6 +18,7 @@ interface ResumoMensal {
 
 export default function ResumoPage() {
   const [resumos, setResumos] = useState<ResumoMensal[]>([])
+  const [orcamentosData, setOrcamentosData] = useState<Orcamento[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedMes, setSelectedMes] = useState<string | null>(null)
@@ -30,6 +31,7 @@ export default function ResumoPage() {
     try {
       setLoading(true)
       const data = await fetchOrcamentos()
+      setOrcamentosData(data)
       const resumo = processarResumo(data)
       setResumos(resumo)
       setError(null)
@@ -38,6 +40,117 @@ export default function ResumoPage() {
       setError('Erro ao carregar dados')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handlePrintMes = (mes: string) => {
+    const orcamentosMes = orcamentosData.filter(orc => orc.mes === mes)
+    const resumoMes = resumos.find(r => r.mes === mes)
+    
+    const tableRows = orcamentosMes.map(orc => {
+      const dataFormatada = new Date(orc.data + 'T00:00:00').toLocaleDateString('pt-BR')
+      const statusClass = orc.status === 'Fechado' ? 'status-fechado' : 'status-perdido'
+      const pagamento = orc.parcelado ? orc.parcelas + 'x' : 'À vista'
+      return `
+        <tr>
+          <td>${dataFormatada}</td>
+          <td>${orc.cliente}</td>
+          <td>${formatCurrency(orc.valor_proposto)}</td>
+          <td>${formatCurrency(orc.valor_fechado)}</td>
+          <td>${formatCurrency(orc.entrada || 0)}</td>
+          <td class="${statusClass}">${orc.status}</td>
+          <td>${pagamento}</td>
+        </tr>
+      `
+    }).join('')
+
+    const totalEntradas = orcamentosMes.reduce((acc, o) => acc + (o.entrada || 0), 0)
+    
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Relatório - ${mes}</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: Arial, sans-serif; padding: 20px; color: #333; }
+          h1 { text-align: center; margin-bottom: 5px; color: #059669; }
+          h2 { text-align: center; margin-bottom: 20px; color: #666; font-size: 18px; }
+          .info { text-align: center; margin-bottom: 20px; color: #888; font-size: 11px; }
+          .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+          .card { padding: 15px; border: 1px solid #ddd; border-radius: 8px; text-align: center; }
+          .card-value { font-size: 24px; font-weight: bold; color: #059669; }
+          .card-label { font-size: 12px; color: #666; margin-top: 5px; }
+          .card.success .card-value { color: #059669; }
+          .card.danger .card-value { color: #dc2626; }
+          .card.primary .card-value { color: #3b82f6; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th, td { border: 1px solid #ddd; padding: 10px; text-align: left; font-size: 12px; }
+          th { background: #059669; color: white; }
+          tr:nth-child(even) { background: #f9f9f9; }
+          .status-fechado { color: #059669; font-weight: bold; }
+          .status-perdido { color: #dc2626; font-weight: bold; }
+          @media print {
+            body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          }
+        </style>
+      </head>
+      <body>
+        <h1>📊 Relatório Mensal</h1>
+        <h2>${mes}</h2>
+        <p class="info">Gerado em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}</p>
+        
+        <div class="summary-cards">
+          <div class="card">
+            <div class="card-value">${resumoMes?.totalOrcamentos || 0}</div>
+            <div class="card-label">Total de Orçamentos</div>
+          </div>
+          <div class="card success">
+            <div class="card-value">${resumoMes?.totalFechados || 0}</div>
+            <div class="card-label">Fechados</div>
+          </div>
+          <div class="card danger">
+            <div class="card-value">${resumoMes?.totalPerdidos || 0}</div>
+            <div class="card-label">Perdidos</div>
+          </div>
+          <div class="card primary">
+            <div class="card-value">${formatPercent(resumoMes?.taxaConversao || 0)}</div>
+            <div class="card-label">Taxa de Conversão</div>
+          </div>
+        </div>
+        
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Cliente</th>
+              <th>Valor Proposto</th>
+              <th>Valor Fechado</th>
+              <th>Entrada</th>
+              <th>Status</th>
+              <th>Pagamento</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows}
+          </tbody>
+        </table>
+        
+        <div style="margin-top: 25px; padding: 15px; background: #f0fdf4; border-radius: 8px;">
+          <h3 style="color: #059669; margin-bottom: 10px;">Totais do Mês</h3>
+          <p style="margin: 5px 0;"><strong>Valor total proposto:</strong> ${formatCurrency(resumoMes?.valorProposto || 0)}</p>
+          <p style="margin: 5px 0;"><strong>Valor total fechado:</strong> ${formatCurrency(resumoMes?.valorFechado || 0)}</p>
+          <p style="margin: 5px 0;"><strong>Valor total em entradas:</strong> ${formatCurrency(totalEntradas)}</p>
+        </div>
+      </body>
+      </html>
+    `
+    
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
     }
   }
 
@@ -188,6 +301,7 @@ export default function ResumoPage() {
                   <th className="text-right">Valor Proposto</th>
                   <th className="text-right">Valor Fechado</th>
                   <th className="text-center">Taxa Conversão</th>
+                  <th className="text-center">Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -245,6 +359,19 @@ export default function ResumoPage() {
                         </span>
                       </div>
                     </td>
+                    <td className="text-center">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handlePrintMes(resumo.mes)
+                        }}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 transition-colors text-sm font-medium"
+                        title={`Imprimir ${resumo.mes}`}
+                      >
+                        <Printer className="w-4 h-4" />
+                        Imprimir
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -264,6 +391,7 @@ export default function ResumoPage() {
                   <td className="text-right font-bold text-dark-300">{formatCurrency(totais.valorProposto)}</td>
                   <td className="text-right font-bold text-primary-400">{formatCurrency(totais.valorFechado)}</td>
                   <td className="text-center font-bold text-amber-400">{formatPercent(taxaConversaoGeral)}</td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>

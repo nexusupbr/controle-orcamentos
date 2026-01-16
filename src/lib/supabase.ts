@@ -12,6 +12,7 @@ export interface Orcamento {
   cliente: string
   valor_proposto: number
   valor_fechado: number
+  entrada: number
   status: 'Fechado' | 'Perdido'
   parcelado: boolean
   parcelas: number

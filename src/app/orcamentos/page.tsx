@@ -7,7 +7,7 @@ import { Input, Select } from '@/components/ui/Form'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
 import { fetchOrcamentos, createOrcamento, updateOrcamento, deleteOrcamento, Orcamento, OrcamentoInput } from '@/lib/supabase'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatCurrency, formatDate, formatNumberBR, parseNumberBR, maskCurrency } from '@/lib/utils'
 
 const statusOptions = [
   { value: '', label: 'Selecione...' },
@@ -29,6 +29,7 @@ const initialFormData: OrcamentoInput = {
   cliente: '',
   valor_proposto: 0,
   valor_fechado: 0,
+  entrada: 0,
   status: 'Fechado',
   parcelado: false,
   parcelas: 1,
@@ -104,6 +105,7 @@ export default function OrcamentosPage() {
         cliente: orcamento.cliente,
         valor_proposto: orcamento.valor_proposto,
         valor_fechado: orcamento.valor_fechado,
+        entrada: orcamento.entrada || 0,
         status: orcamento.status,
         parcelado: orcamento.parcelado || false,
         parcelas: orcamento.parcelas || 1,
@@ -206,6 +208,7 @@ export default function OrcamentosPage() {
               <th>Cliente</th>
               <th>Valor Proposto</th>
               <th>Valor Fechado</th>
+              <th>Entrada</th>
               <th>Status</th>
               <th>Pagamento</th>
             </tr>
@@ -218,6 +221,7 @@ export default function OrcamentosPage() {
                 <td>${orc.cliente}</td>
                 <td>${formatCurrency(orc.valor_proposto)}</td>
                 <td>${formatCurrency(orc.valor_fechado)}</td>
+                <td>${formatCurrency(orc.entrada || 0)}</td>
                 <td class="${orc.status === 'Fechado' ? 'status-fechado' : 'status-perdido'}">${orc.status}</td>
                 <td>${orc.parcelado ? orc.parcelas + 'x' : 'À vista'}</td>
               </tr>
@@ -232,6 +236,7 @@ export default function OrcamentosPage() {
           <p><strong>Perdidos:</strong> ${filteredOrcamentos.filter(o => o.status === 'Perdido').length}</p>
           <p><strong>Valor total proposto:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_proposto, 0))}</p>
           <p><strong>Valor total fechado:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_fechado, 0))}</p>
+          <p><strong>Valor total entrada:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + (o.entrada || 0), 0))}</p>
         </div>
       </body>
       </html>
@@ -246,13 +251,14 @@ export default function OrcamentosPage() {
   }
 
   const handleExportCSV = () => {
-    const headers = ['Data', 'Mês', 'Cliente', 'Valor Proposto', 'Valor Fechado', 'Status', 'Parcelado', 'Parcelas']
+    const headers = ['Data', 'Mês', 'Cliente', 'Valor Proposto', 'Valor Fechado', 'Entrada', 'Status', 'Parcelado', 'Parcelas']
     const rows = filteredOrcamentos.map(orc => [
       orc.data,
       orc.mes,
       orc.cliente,
       orc.valor_proposto,
       orc.valor_fechado,
+      orc.entrada || 0,
       orc.status,
       orc.parcelado ? 'Sim' : 'Não',
       orc.parcelas
@@ -362,6 +368,7 @@ export default function OrcamentosPage() {
                   <th>Cliente</th>
                   <th>Valor Proposto</th>
                   <th>Valor Fechado</th>
+                  <th>Entrada</th>
                   <th>Status</th>
                   <th>Pagamento</th>
                   <th className="text-right">Ações</th>
@@ -380,6 +387,9 @@ export default function OrcamentosPage() {
                     <td className="text-dark-300">{formatCurrency(orc.valor_proposto)}</td>
                     <td className="text-primary-400 font-semibold">
                       {formatCurrency(orc.valor_fechado)}
+                    </td>
+                    <td className="text-emerald-400">
+                      {formatCurrency(orc.entrada || 0)}
                     </td>
                     <td>
                       <Badge variant={orc.status === 'Fechado' ? 'success' : 'danger'}>
@@ -465,24 +475,65 @@ export default function OrcamentosPage() {
           </div>
 
           {/* Valores */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Valor Proposto"
-              type="number"
-              step="0.01"
-              min="0"
-              required
-              value={formData.valor_proposto || ''}
-              onChange={(e) => setFormData({ ...formData, valor_proposto: parseFloat(e.target.value) || 0 })}
-            />
-            <Input
-              label="Valor Fechado"
-              type="number"
-              step="0.01"
-              min="0"
-              value={formData.valor_fechado || ''}
-              onChange={(e) => setFormData({ ...formData, valor_fechado: parseFloat(e.target.value) || 0 })}
-            />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Valor Proposto <span className="text-red-400">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-dark-400">R$</span>
+                <input
+                  type="text"
+                  className="input pl-12"
+                  placeholder="0,00"
+                  required
+                  value={formData.valor_proposto ? formatNumberBR(formData.valor_proposto) : ''}
+                  onChange={(e) => {
+                    const masked = maskCurrency(e.target.value)
+                    const numValue = parseNumberBR(masked)
+                    setFormData({ ...formData, valor_proposto: numValue })
+                  }}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Valor Fechado
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-dark-400">R$</span>
+                <input
+                  type="text"
+                  className="input pl-12"
+                  placeholder="0,00"
+                  value={formData.valor_fechado ? formatNumberBR(formData.valor_fechado) : ''}
+                  onChange={(e) => {
+                    const masked = maskCurrency(e.target.value)
+                    const numValue = parseNumberBR(masked)
+                    setFormData({ ...formData, valor_fechado: numValue })
+                  }}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Entrada
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-dark-400">R$</span>
+                <input
+                  type="text"
+                  className="input pl-12"
+                  placeholder="0,00"
+                  value={formData.entrada ? formatNumberBR(formData.entrada) : ''}
+                  onChange={(e) => {
+                    const masked = maskCurrency(e.target.value)
+                    const numValue = parseNumberBR(masked)
+                    setFormData({ ...formData, entrada: numValue })
+                  }}
+                />
+              </div>
+            </div>
           </div>
 
           {/* Status e Parcelamento */}
