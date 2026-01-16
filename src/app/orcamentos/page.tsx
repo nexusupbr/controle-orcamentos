@@ -384,6 +384,7 @@ export default function OrcamentosPage() {
                   <th>Entrada</th>
                   <th>Status</th>
                   <th>Pagamento</th>
+                  <th>NF</th>
                   <th className="text-right">Ações</th>
                 </tr>
               </thead>
@@ -413,6 +414,11 @@ export default function OrcamentosPage() {
                     <td>
                       <span className={`text-sm ${orc.parcelado ? 'text-amber-400' : 'text-dark-400'}`}>
                         {orc.parcelado ? `${orc.parcelas}x` : 'À vista'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`text-sm font-medium ${orc.nota_fiscal ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {orc.nota_fiscal ? '✓ Sim' : '✗ Não'}
                       </span>
                     </td>
                     <td>
