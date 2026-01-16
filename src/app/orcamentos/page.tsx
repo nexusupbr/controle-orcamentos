@@ -13,6 +13,7 @@ const statusOptions = [
   { value: '', label: 'Selecione...' },
   { value: 'Fechado', label: 'Fechado' },
   { value: 'Perdido', label: 'Perdido' },
+  { value: 'Análise', label: 'Análise' },
 ]
 
 // Função para extrair mês/ano de uma data
@@ -33,6 +34,8 @@ const initialFormData: OrcamentoInput = {
   status: 'Fechado',
   parcelado: false,
   parcelas: 1,
+  observacoes: '',
+  nota_fiscal: false,
 }
 
 export default function OrcamentosPage() {
@@ -109,6 +112,8 @@ export default function OrcamentosPage() {
         status: orcamento.status,
         parcelado: orcamento.parcelado || false,
         parcelas: orcamento.parcelas || 1,
+        observacoes: orcamento.observacoes || '',
+        nota_fiscal: orcamento.nota_fiscal || false,
       })
     } else {
       setEditingId(null)
@@ -188,6 +193,7 @@ export default function OrcamentosPage() {
           tr:nth-child(even) { background: #f9f9f9; }
           .status-fechado { color: #059669; font-weight: bold; }
           .status-perdido { color: #dc2626; font-weight: bold; }
+          .status-analise { color: #f59e0b; font-weight: bold; }
           .totais { margin-top: 20px; padding: 15px; background: #f0fdf4; border-radius: 8px; }
           .totais h3 { color: #059669; margin-bottom: 10px; }
           .totais p { margin: 5px 0; }
@@ -211,6 +217,7 @@ export default function OrcamentosPage() {
               <th>Entrada</th>
               <th>Status</th>
               <th>Pagamento</th>
+              <th>NF</th>
             </tr>
           </thead>
           <tbody>
@@ -222,8 +229,9 @@ export default function OrcamentosPage() {
                 <td>${formatCurrency(orc.valor_proposto)}</td>
                 <td>${formatCurrency(orc.valor_fechado)}</td>
                 <td>${formatCurrency(orc.entrada || 0)}</td>
-                <td class="${orc.status === 'Fechado' ? 'status-fechado' : 'status-perdido'}">${orc.status}</td>
+                <td class="${orc.status === 'Fechado' ? 'status-fechado' : orc.status === 'Análise' ? 'status-analise' : 'status-perdido'}">${orc.status}</td>
                 <td>${orc.parcelado ? orc.parcelas + 'x' : 'À vista'}</td>
+                <td>${orc.nota_fiscal ? '✓ Sim' : '✗ Não'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -233,7 +241,9 @@ export default function OrcamentosPage() {
           <h3>Resumo</h3>
           <p><strong>Total de orçamentos:</strong> ${filteredOrcamentos.length}</p>
           <p><strong>Fechados:</strong> ${filteredOrcamentos.filter(o => o.status === 'Fechado').length}</p>
+          <p><strong>Em Análise:</strong> ${filteredOrcamentos.filter(o => o.status === 'Análise').length}</p>
           <p><strong>Perdidos:</strong> ${filteredOrcamentos.filter(o => o.status === 'Perdido').length}</p>
+          <p><strong>Com Nota Fiscal:</strong> ${filteredOrcamentos.filter(o => o.nota_fiscal).length}</p>
           <p><strong>Valor total proposto:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_proposto, 0))}</p>
           <p><strong>Valor total fechado:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + o.valor_fechado, 0))}</p>
           <p><strong>Valor total entrada:</strong> ${formatCurrency(filteredOrcamentos.reduce((acc, o) => acc + (o.entrada || 0), 0))}</p>
@@ -251,7 +261,7 @@ export default function OrcamentosPage() {
   }
 
   const handleExportCSV = () => {
-    const headers = ['Data', 'Mês', 'Cliente', 'Valor Proposto', 'Valor Fechado', 'Entrada', 'Status', 'Parcelado', 'Parcelas']
+    const headers = ['Data', 'Mês', 'Cliente', 'Valor Proposto', 'Valor Fechado', 'Entrada', 'Status', 'Parcelado', 'Parcelas', 'Nota Fiscal', 'Observações']
     const rows = filteredOrcamentos.map(orc => [
       orc.data,
       orc.mes,
@@ -261,7 +271,9 @@ export default function OrcamentosPage() {
       orc.entrada || 0,
       orc.status,
       orc.parcelado ? 'Sim' : 'Não',
-      orc.parcelas
+      orc.parcelas,
+      orc.nota_fiscal ? 'Sim' : 'Não',
+      `"${(orc.observacoes || '').replace(/"/g, '""')}"`
     ])
     
     const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n')
@@ -350,6 +362,7 @@ export default function OrcamentosPage() {
             >
               <option value="Todos">Todos status</option>
               <option value="Fechado">Fechado</option>
+              <option value="Análise">Análise</option>
               <option value="Perdido">Perdido</option>
             </select>
           </div>
@@ -392,8 +405,8 @@ export default function OrcamentosPage() {
                       {formatCurrency(orc.entrada || 0)}
                     </td>
                     <td>
-                      <Badge variant={orc.status === 'Fechado' ? 'success' : 'danger'}>
-                        {orc.status === 'Fechado' ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                      <Badge variant={orc.status === 'Fechado' ? 'success' : orc.status === 'Análise' ? 'warning' : 'danger'}>
+                        {orc.status === 'Fechado' ? <Check className="w-3 h-3" /> : orc.status === 'Análise' ? null : <X className="w-3 h-3" />}
                         {orc.status}
                       </Badge>
                     </td>
@@ -543,7 +556,7 @@ export default function OrcamentosPage() {
               required
               options={statusOptions}
               value={formData.status}
-              onChange={(e) => setFormData({ ...formData, status: e.target.value as 'Fechado' | 'Perdido' })}
+              onChange={(e) => setFormData({ ...formData, status: e.target.value as 'Fechado' | 'Perdido' | 'Análise' })}
             />
             
             {/* Parcelamento bonito */}
@@ -602,6 +615,51 @@ export default function OrcamentosPage() {
               </p>
             </div>
           )}
+
+          {/* Nota Fiscal */}
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-2">
+              Nota Fiscal
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, nota_fiscal: true })}
+                className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                  formData.nota_fiscal
+                    ? 'bg-emerald-500/20 text-emerald-400 border-2 border-emerald-500'
+                    : 'bg-dark-800 text-dark-400 border-2 border-dark-700 hover:border-dark-600'
+                }`}
+              >
+                ✓ Com Nota Fiscal
+              </button>
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, nota_fiscal: false })}
+                className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                  !formData.nota_fiscal
+                    ? 'bg-red-500/20 text-red-400 border-2 border-red-500'
+                    : 'bg-dark-800 text-dark-400 border-2 border-dark-700 hover:border-dark-600'
+                }`}
+              >
+                ✗ Sem Nota Fiscal
+              </button>
+            </div>
+          </div>
+
+          {/* Observações */}
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-2">
+              Observações
+            </label>
+            <textarea
+              placeholder="Digite observações sobre o orçamento..."
+              value={formData.observacoes || ''}
+              onChange={(e) => setFormData({ ...formData, observacoes: e.target.value })}
+              rows={3}
+              className="input resize-none"
+            />
+          </div>
           
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
             <Button type="button" variant="secondary" onClick={closeModal}>

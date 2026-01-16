@@ -49,8 +49,9 @@ export default function ResumoPage() {
     
     const tableRows = orcamentosMes.map(orc => {
       const dataFormatada = new Date(orc.data + 'T00:00:00').toLocaleDateString('pt-BR')
-      const statusClass = orc.status === 'Fechado' ? 'status-fechado' : 'status-perdido'
+      const statusClass = orc.status === 'Fechado' ? 'status-fechado' : orc.status === 'Análise' ? 'status-analise' : 'status-perdido'
       const pagamento = orc.parcelado ? orc.parcelas + 'x' : 'À vista'
+      const notaFiscal = orc.nota_fiscal ? '✓ Sim' : '✗ Não'
       return `
         <tr>
           <td>${dataFormatada}</td>
@@ -60,11 +61,15 @@ export default function ResumoPage() {
           <td>${formatCurrency(orc.entrada || 0)}</td>
           <td class="${statusClass}">${orc.status}</td>
           <td>${pagamento}</td>
+          <td>${notaFiscal}</td>
         </tr>
       `
     }).join('')
 
     const totalEntradas = orcamentosMes.reduce((acc, o) => acc + (o.entrada || 0), 0)
+    const comNotaFiscal = orcamentosMes.filter(o => o.nota_fiscal).length
+    const semNotaFiscal = orcamentosMes.filter(o => !o.nota_fiscal).length
+    const emAnalise = orcamentosMes.filter(o => o.status === 'Análise').length
     
     const printContent = `
       <!DOCTYPE html>
@@ -90,6 +95,7 @@ export default function ResumoPage() {
           tr:nth-child(even) { background: #f9f9f9; }
           .status-fechado { color: #059669; font-weight: bold; }
           .status-perdido { color: #dc2626; font-weight: bold; }
+          .status-analise { color: #f59e0b; font-weight: bold; }
           @media print {
             body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           }
@@ -129,6 +135,7 @@ export default function ResumoPage() {
               <th>Entrada</th>
               <th>Status</th>
               <th>Pagamento</th>
+              <th>NF</th>
             </tr>
           </thead>
           <tbody>
@@ -141,6 +148,10 @@ export default function ResumoPage() {
           <p style="margin: 5px 0;"><strong>Valor total proposto:</strong> ${formatCurrency(resumoMes?.valorProposto || 0)}</p>
           <p style="margin: 5px 0;"><strong>Valor total fechado:</strong> ${formatCurrency(resumoMes?.valorFechado || 0)}</p>
           <p style="margin: 5px 0;"><strong>Valor total em entradas:</strong> ${formatCurrency(totalEntradas)}</p>
+          <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;" />
+          <p style="margin: 5px 0;"><strong>Em Análise:</strong> ${emAnalise}</p>
+          <p style="margin: 5px 0;"><strong>Com Nota Fiscal:</strong> ${comNotaFiscal}</p>
+          <p style="margin: 5px 0;"><strong>Sem Nota Fiscal:</strong> ${semNotaFiscal}</p>
         </div>
       </body>
       </html>

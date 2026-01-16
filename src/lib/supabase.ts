@@ -13,9 +13,11 @@ export interface Orcamento {
   valor_proposto: number
   valor_fechado: number
   entrada: number
-  status: 'Fechado' | 'Perdido'
+  status: 'Fechado' | 'Perdido' | 'Análise'
   parcelado: boolean
   parcelas: number
+  observacoes: string
+  nota_fiscal: boolean
   created_at?: string
   updated_at?: string
 }
