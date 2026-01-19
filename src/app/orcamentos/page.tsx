@@ -252,11 +252,13 @@ export default function OrcamentosPage() {
       </html>
     `
     
-    const printWindow = window.open('', '_blank')
+    const printWindow = window.open('', '_blank', 'width=800,height=600')
     if (printWindow) {
       printWindow.document.write(printContent)
       printWindow.document.close()
+      printWindow.focus()
       printWindow.print()
+      // Não fecha automaticamente para evitar redirecionamento
     }
   }
 

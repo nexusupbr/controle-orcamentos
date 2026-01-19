@@ -79,6 +79,78 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
 
 Select.displayName = 'Select'
 
+// Select com children (permite usar <option> diretamente)
+interface SelectChildrenProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
+  label?: string
+  error?: string
+  required?: boolean
+  children: React.ReactNode
+}
+
+export const SelectChildren = forwardRef<HTMLSelectElement, SelectChildrenProps>(
+  ({ className, label, error, required, children, ...props }, ref) => {
+    return (
+      <div className="space-y-1.5">
+        {label && (
+          <label className={cn('label', required && 'label-required')}>
+            {label}
+          </label>
+        )}
+        <select
+          className={cn(
+            'select',
+            error && 'border-red-500 focus:border-red-500 focus:ring-red-500/20',
+            className
+          )}
+          ref={ref}
+          {...props}
+        >
+          {children}
+        </select>
+        {error && (
+          <p className="text-xs text-red-400 mt-1">{error}</p>
+        )}
+      </div>
+    )
+  }
+)
+
+SelectChildren.displayName = 'SelectChildren'
+
+interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  label?: string
+  error?: string
+  required?: boolean
+}
+
+export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
+  ({ className, label, error, required, ...props }, ref) => {
+    return (
+      <div className="space-y-1.5">
+        {label && (
+          <label className={cn('label', required && 'label-required')}>
+            {label}
+          </label>
+        )}
+        <textarea
+          className={cn(
+            'input min-h-[80px] resize-y',
+            error && 'border-red-500 focus:border-red-500 focus:ring-red-500/20',
+            className
+          )}
+          ref={ref}
+          {...props}
+        />
+        {error && (
+          <p className="text-xs text-red-400 mt-1">{error}</p>
+        )}
+      </div>
+    )
+  }
+)
+
+TextArea.displayName = 'TextArea'
+
 interface CheckboxProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type'> {
   label?: string
 }

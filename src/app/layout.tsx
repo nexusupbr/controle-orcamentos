@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { Header } from '@/components/layout/Header'
+import { AuthProvider } from '@/contexts/AuthContext'
+import { AdminAuthProvider } from '@/contexts/AdminAuthContext'
+import { LayoutWrapper } from '@/components/layout/LayoutWrapper'
 
 const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
 
@@ -21,15 +22,13 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <body className="min-h-screen">
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <div className="flex-1 flex flex-col lg:ml-64">
-            <Header />
-            <main className="flex-1 p-4 lg:p-8 overflow-auto">
+        <AuthProvider>
+          <AdminAuthProvider>
+            <LayoutWrapper>
               {children}
-            </main>
-          </div>
-        </div>
+            </LayoutWrapper>
+          </AdminAuthProvider>
+        </AuthProvider>
       </body>
     </html>
   )

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { 
   LayoutDashboard, 
   FileText, 
@@ -10,21 +10,70 @@ import {
   Settings,
   LogOut,
   Menu,
-  X
+  X,
+  Package,
+  HardHat,
+  Shield,
+  ArrowLeft
 } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
+import { useAdminAuth } from '@/contexts/AdminAuthContext'
 
-const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+// Navegação para Admin (área administrativa)
+const adminNavigation = [
+  { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
   { name: 'Orçamentos', href: '/orcamentos', icon: FileText },
+  { name: 'Obras', href: '/obras', icon: HardHat },
+  { name: 'Materiais', href: '/materiais', icon: Package },
   { name: 'Resumo', href: '/resumo', icon: BarChart3 },
   { name: 'Configurações', href: '/configuracoes', icon: Settings },
 ]
 
+// Navegação simples (padrão para todos)
+const simpleNavigation = [
+  { name: 'Obras', href: '/', icon: HardHat },
+]
+
+// Rotas administrativas
+const adminRoutes = ['/admin', '/orcamentos', '/materiais', '/resumo', '/configuracoes', '/obras']
+
 export function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
+  const { usuario, logout, authEnabled } = useAuth()
+  const { isAuthenticated: isAdminAuthenticated, logout: adminLogout, email: adminEmail } = useAdminAuth()
   const [isMobileOpen, setIsMobileOpen] = useState(false)
+
+  // Verifica se está na área administrativa
+  const isInAdminArea = adminRoutes.some(route => pathname.startsWith(route) && route !== '/')
+  
+  // Seleciona a navegação baseada na área
+  const navigation = isInAdminArea ? adminNavigation : simpleNavigation
+
+  const handleLogout = () => {
+    logout()
+    router.push('/login')
+  }
+
+  const handleAdminLogout = () => {
+    adminLogout()
+    router.push('/')
+  }
+
+  const goToAdmin = () => {
+    // Sempre redireciona para login administrativo
+    if (isAdminAuthenticated) {
+      router.push('/admin')
+    } else {
+      router.push('/admin/login')
+    }
+  }
+
+  const goToObras = () => {
+    router.push('/')
+  }
 
   return (
     <>
@@ -75,9 +124,21 @@ export function Sidebar() {
 
           {/* Navigation */}
           <nav className="flex-1 p-4 space-y-2 overflow-y-auto scrollbar-thin">
+            {/* Voltar para Obras (se estiver na área admin) */}
+            {isInAdminArea && (
+              <button
+                onClick={goToObras}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 group text-dark-400 hover:text-white hover:bg-dark-800/80 mb-4"
+              >
+                <ArrowLeft className="w-5 h-5 text-dark-500 group-hover:text-primary-400" />
+                <span>Voltar para Obras</span>
+              </button>
+            )}
+
             <p className="px-3 text-xs font-semibold text-dark-500 uppercase tracking-wider mb-4">
-              Menu Principal
+              {isInAdminArea ? 'Área Administrativa' : 'Menu Principal'}
             </p>
+            
             {navigation.map((item) => {
               const isActive = pathname === item.href
               return (
@@ -103,25 +164,57 @@ export function Sidebar() {
                 </Link>
               )
             })}
+
+            {/* Botão Área Administrativa (somente quando não está na área admin) */}
+            {!isInAdminArea && (
+              <div className="pt-4 mt-4 border-t border-dark-800">
+                <button
+                  onClick={goToAdmin}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 group bg-gradient-to-r from-accent-500/10 to-accent-600/5 text-accent-400 border border-accent-500/20 hover:border-accent-500/40 hover:from-accent-500/20 hover:to-accent-600/10"
+                >
+                  <Shield className="w-5 h-5 transition-transform duration-200 group-hover:scale-110" />
+                  <span>Área Administrativa</span>
+                </button>
+              </div>
+            )}
           </nav>
 
           {/* Footer */}
           <div className="p-4 border-t border-dark-800">
-            <div className="glass rounded-xl p-4 mb-4">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white font-bold">
-                  A
+            {isInAdminArea && isAdminAuthenticated ? (
+              <>
+                <div className="glass rounded-xl p-4 mb-4">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent-500 to-accent-700 flex items-center justify-center text-white font-bold">
+                      <Shield className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-white">Admin</p>
+                      <p className="text-xs text-dark-400 truncate max-w-[140px]">{adminEmail}</p>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-white">Andressa</p>
-                  <p className="text-xs text-dark-400">Administrador</p>
+                <button 
+                  onClick={handleAdminLogout}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-dark-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span className="text-sm font-medium">Sair da Área Admin</span>
+                </button>
+              </>
+            ) : (
+              <div className="glass rounded-xl p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white font-bold">
+                    <HardHat className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-white">Funcionário</p>
+                    <p className="text-xs text-dark-400">Área de Obras</p>
+                  </div>
                 </div>
               </div>
-            </div>
-            <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-dark-400 hover:text-red-400 hover:bg-red-500/10 transition-colors">
-              <LogOut className="w-4 h-4" />
-              <span className="text-sm font-medium">Sair</span>
-            </button>
+            )}
           </div>
         </div>
       </aside>
