@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Plus, Edit2, Trash2, Search, HardHat, LinkIcon, Play, Pause, CheckCircle, ChevronDown, ChevronUp, Package } from 'lucide-react'
+import { Plus, Edit2, Trash2, Search, HardHat, LinkIcon, Play, Pause, CheckCircle, ChevronDown, ChevronUp, Package, Printer } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, SelectChildren, TextArea } from '@/components/ui/Form'
 import { Modal } from '@/components/ui/Modal'
@@ -124,6 +124,286 @@ export default function ObrasPage() {
         o.id === obraId ? { ...o, loadingMateriais: false } : o
       ))
     }
+  }
+
+  // Função para imprimir relatório de materiais
+  const handlePrintRelatorio = async (obra: ObraComMateriais) => {
+    // Carrega materiais se ainda não foram carregados
+    let materiaisParaImprimir = obra.materiaisCarregados
+    
+    if (!materiaisParaImprimir) {
+      try {
+        materiaisParaImprimir = await fetchObraMateriaisComDetalhes(obra.id)
+        setObras(prev => prev.map(o => 
+          o.id === obra.id ? { ...o, materiaisCarregados: materiaisParaImprimir, loadingMateriais: false } : o
+        ))
+      } catch (err) {
+        console.error('Erro ao carregar materiais para impressão:', err)
+        alert('Erro ao carregar materiais para impressão')
+        return
+      }
+    }
+    
+    const orcamento = getOrcamentoInfo(obra.orcamento_id)
+    const materiaisUtilizados = materiaisParaImprimir?.filter(m => m.quantidade > 0) || []
+    const dataAtual = new Date().toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+    
+    const statusLabel = statusOptions.find(s => s.value === obra.status)?.label || obra.status
+    
+    // Cria o HTML para impressão
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      alert('Popup bloqueado. Permita popups para imprimir.')
+      return
+    }
+    
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Relatório de Materiais - ${obra.nome}</title>
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+          body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            color: #333;
+            line-height: 1.5;
+          }
+          .header {
+            text-align: center;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+          }
+          .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+            color: #1a1a1a;
+          }
+          .header p {
+            color: #666;
+            font-size: 12px;
+          }
+          .info-section {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+          }
+          .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+          }
+          .info-item {
+            margin-bottom: 8px;
+          }
+          .info-label {
+            font-weight: 600;
+            color: #555;
+            font-size: 12px;
+            text-transform: uppercase;
+          }
+          .info-value {
+            color: #1a1a1a;
+            font-size: 14px;
+          }
+          .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+          }
+          .status-em_andamento { background: #dcfce7; color: #166534; }
+          .status-pausada { background: #fef3c7; color: #92400e; }
+          .status-concluida { background: #dbeafe; color: #1e40af; }
+          
+          .materials-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #ddd;
+          }
+          .materials-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+          }
+          .materials-table th,
+          .materials-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+          }
+          .materials-table th {
+            background: #f0f0f0;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #555;
+          }
+          .materials-table tr:hover {
+            background: #f9f9f9;
+          }
+          .materials-table .qty {
+            text-align: center;
+            font-weight: 600;
+            color: #1a1a1a;
+          }
+          .materials-table .idx {
+            text-align: center;
+            color: #888;
+            width: 40px;
+          }
+          .empty-message {
+            text-align: center;
+            padding: 30px;
+            color: #888;
+            font-style: italic;
+          }
+          .footer {
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #888;
+          }
+          .signature-area {
+            margin-top: 50px;
+            display: flex;
+            justify-content: space-between;
+          }
+          .signature-box {
+            text-align: center;
+            width: 200px;
+          }
+          .signature-line {
+            border-top: 1px solid #333;
+            margin-top: 50px;
+            padding-top: 5px;
+            font-size: 12px;
+          }
+          .total-items {
+            text-align: right;
+            font-size: 14px;
+            margin-top: 10px;
+            font-weight: 600;
+          }
+          @media print {
+            body { padding: 10px; }
+            .no-print { display: none; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>📋 Relatório de Materiais</h1>
+          <p>Checklist de materiais utilizados na obra</p>
+        </div>
+        
+        <div class="info-section">
+          <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">Nome da Obra</div>
+              <div class="info-value">${obra.nome}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Status</div>
+              <div class="info-value">
+                <span class="status-badge status-${obra.status}">${statusLabel}</span>
+              </div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Cliente / Orçamento</div>
+              <div class="info-value">${orcamento ? `${orcamento.cliente} (Orç. #${orcamento.id})` : 'Não vinculado'}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Data do Relatório</div>
+              <div class="info-value">${dataAtual}</div>
+            </div>
+            ${obra.descricao ? `
+            <div class="info-item" style="grid-column: span 2;">
+              <div class="info-label">Descrição</div>
+              <div class="info-value">${obra.descricao}</div>
+            </div>
+            ` : ''}
+          </div>
+        </div>
+        
+        <div class="materials-title">📦 Materiais Utilizados</div>
+        
+        ${materiaisUtilizados.length > 0 ? `
+          <table class="materials-table">
+            <thead>
+              <tr>
+                <th class="idx">#</th>
+                <th>Material</th>
+                <th class="qty">Quantidade</th>
+                <th>Conferido</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${materiaisUtilizados.map((m, index) => `
+                <tr>
+                  <td class="idx">${index + 1}</td>
+                  <td>${m.material?.nome || `Material #${m.material_id}`}</td>
+                  <td class="qty">${m.quantidade} un</td>
+                  <td style="width: 80px;">☐</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div class="total-items">
+            Total: ${materiaisUtilizados.length} ${materiaisUtilizados.length === 1 ? 'item' : 'itens'} | 
+            ${materiaisUtilizados.reduce((acc, m) => acc + m.quantidade, 0)} unidades
+          </div>
+        ` : `
+          <div class="empty-message">
+            Nenhum material registrado para esta obra
+          </div>
+        `}
+        
+        <div class="signature-area">
+          <div class="signature-box">
+            <div class="signature-line">Responsável pela Obra</div>
+          </div>
+          <div class="signature-box">
+            <div class="signature-line">Conferente</div>
+          </div>
+        </div>
+        
+        <div class="footer">
+          <span>Obra #${obra.id}</span>
+          <span>Gerado em: ${dataAtual}</span>
+        </div>
+        
+        <script>
+          window.onload = function() {
+            window.print();
+          }
+        </script>
+      </body>
+      </html>
+    `)
+    
+    printWindow.document.close()
   }
 
   const getOrcamentoInfo = (orcamentoId: number | null) => {
@@ -356,10 +636,20 @@ export default function ObrasPage() {
                         <tr key={`${obra.id}-materiais`} className="bg-dark-800/50">
                           <td colSpan={7} className="p-0">
                             <div className="p-4 border-t border-dark-700">
-                              <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-                                <Package className="w-4 h-4 text-primary-400" />
-                                Materiais Utilizados
-                              </h4>
+                              <div className="flex items-center justify-between mb-3">
+                                <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                                  <Package className="w-4 h-4 text-primary-400" />
+                                  Materiais Utilizados
+                                </h4>
+                                <button
+                                  onClick={() => handlePrintRelatorio(obra)}
+                                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-primary-500/10 text-primary-400 hover:bg-primary-500/20 transition-colors"
+                                  title="Imprimir relatório de materiais"
+                                >
+                                  <Printer className="w-4 h-4" />
+                                  Imprimir Relatório
+                                </button>
+                              </div>
                               
                               {obra.loadingMateriais ? (
                                 <div className="flex items-center justify-center py-4">
