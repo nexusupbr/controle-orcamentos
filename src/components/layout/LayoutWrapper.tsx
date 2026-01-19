@@ -1,7 +1,7 @@
 'use client'
 
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
 import { useAuth } from '@/contexts/AuthContext'
@@ -14,29 +14,47 @@ const noLayoutRoutes = ['/login', '/admin/login']
 // Rotas que precisam de autenticação administrativa
 const adminRoutes = ['/admin', '/orcamentos', '/obras', '/materiais', '/resumo', '/configuracoes']
 
+// Base path para produção (GitHub Pages)
+const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
+
 export function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { loading: authLoading } = useAuth()
   const { isAuthenticated: isAdminAuthenticated, loading: adminLoading } = useAdminAuth()
+  const [isClient, setIsClient] = useState(false)
 
-  // Normaliza o pathname removendo barra final
-  const normalizedPathname = pathname?.endsWith('/') ? pathname.slice(0, -1) : pathname
+  // Marca quando está no cliente
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
+
+  // Normaliza o pathname removendo barra final e basePath
+  let normalizedPathname = pathname || ''
+  if (normalizedPathname.startsWith(basePath)) {
+    normalizedPathname = normalizedPathname.slice(basePath.length)
+  }
+  if (normalizedPathname.endsWith('/') && normalizedPathname.length > 1) {
+    normalizedPathname = normalizedPathname.slice(0, -1)
+  }
+  if (!normalizedPathname) {
+    normalizedPathname = '/'
+  }
   
-  const isNoLayoutRoute = noLayoutRoutes.includes(normalizedPathname || '')
-  const isAdminRoute = adminRoutes.some(route => normalizedPathname === route || normalizedPathname?.startsWith(route + '/'))
+  const isNoLayoutRoute = noLayoutRoutes.includes(normalizedPathname)
+  const isAdminRoute = adminRoutes.some(route => normalizedPathname === route || normalizedPathname.startsWith(route + '/'))
 
   // Rota de login - renderiza imediatamente sem esperar loading
   if (isNoLayoutRoute) {
     return <>{children}</>
   }
 
-  // Proteção das rotas administrativas
+  // Proteção das rotas administrativas - redireciona se não autenticado
   useEffect(() => {
-    if (!authLoading && !adminLoading && isAdminRoute && !isAdminAuthenticated) {
+    if (isClient && !authLoading && !adminLoading && isAdminRoute && !isAdminAuthenticated) {
       router.push('/admin/login')
     }
-  }, [pathname, isAdminAuthenticated, authLoading, adminLoading, isAdminRoute, router])
+  }, [isClient, pathname, isAdminAuthenticated, authLoading, adminLoading, isAdminRoute, router])
 
   // Loading inicial (apenas para rotas que não são de login)
   if (authLoading || adminLoading) {
