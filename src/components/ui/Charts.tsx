@@ -32,6 +32,7 @@ export function ChartCard({ title, children }: ChartCardProps) {
 interface BarChartData {
   mes: string
   fechado: number
+  analise?: number
   perdido: number
 }
 
@@ -75,6 +76,13 @@ export function MonthlyBarChart({ data }: BarChartProps) {
             maxBarSize={50}
           />
           <Bar 
+            dataKey="analise" 
+            name="Em Análise"
+            fill="#f59e0b" 
+            radius={[6, 6, 0, 0]}
+            maxBarSize={50}
+          />
+          <Bar 
             dataKey="perdido" 
             name="Perdido"
             fill="#ef4444" 
@@ -98,7 +106,7 @@ interface DonutChartProps {
 }
 
 export function StatusDonutChart({ data }: DonutChartProps) {
-  const COLORS = ['#10b981', '#ef4444']
+  const COLORS = ['#10b981', '#f59e0b', '#ef4444']
   
   return (
     <div className="h-80">

@@ -6,13 +6,15 @@ import { ChartCard, MonthlyBarChart, StatusDonutChart } from '@/components/ui/Ch
 import { LoadingSpinner, EmptyState } from '@/components/ui/Common'
 import { fetchOrcamentos, Orcamento } from '@/lib/supabase'
 import { formatCurrency, calcConversionRate } from '@/lib/utils'
-import { TrendingUp, TrendingDown, Target, DollarSign, FileText, Activity } from 'lucide-react'
+import { TrendingUp, TrendingDown, Target, DollarSign, FileText, Activity, Clock } from 'lucide-react'
 
 interface Stats {
   totalFechado: number
   totalPerdido: number
+  totalAnalise: number
   fechados: number
   perdidos: number
+  emAnalise: number
   total: number
   taxaConversao: number
 }
@@ -22,8 +24,10 @@ interface ResumoMensal {
     mes: string
     totalFechado: number
     totalPerdido: number
+    totalAnalise: number
     fechados: number
     perdidos: number
+    emAnalise: number
   }
 }
 
@@ -56,6 +60,9 @@ export default function AdminDashboardPage() {
       if (orc.status === 'Fechado') {
         acc.fechados++
         acc.totalFechado += orc.valor_fechado || 0
+      } else if (orc.status === 'Análise') {
+        acc.emAnalise++
+        acc.totalAnalise += orc.valor_proposto || 0
       } else {
         acc.perdidos++
         acc.totalPerdido += orc.valor_proposto || 0
@@ -63,7 +70,7 @@ export default function AdminDashboardPage() {
       acc.total++
       return acc
     },
-    { totalFechado: 0, totalPerdido: 0, fechados: 0, perdidos: 0, total: 0, taxaConversao: 0 }
+    { totalFechado: 0, totalPerdido: 0, totalAnalise: 0, fechados: 0, perdidos: 0, emAnalise: 0, total: 0, taxaConversao: 0 }
   )
   stats.taxaConversao = calcConversionRate(stats.fechados, stats.total)
 
@@ -71,11 +78,14 @@ export default function AdminDashboardPage() {
   const resumoMensal: ResumoMensal = orcamentos.reduce((acc, orc) => {
     const mes = orc.mes
     if (!acc[mes]) {
-      acc[mes] = { mes, totalFechado: 0, totalPerdido: 0, fechados: 0, perdidos: 0 }
+      acc[mes] = { mes, totalFechado: 0, totalPerdido: 0, totalAnalise: 0, fechados: 0, perdidos: 0, emAnalise: 0 }
     }
     if (orc.status === 'Fechado') {
       acc[mes].fechados++
       acc[mes].totalFechado += orc.valor_fechado || 0
+    } else if (orc.status === 'Análise') {
+      acc[mes].emAnalise++
+      acc[mes].totalAnalise += orc.valor_proposto || 0
     } else {
       acc[mes].perdidos++
       acc[mes].totalPerdido += orc.valor_proposto || 0
@@ -93,12 +103,14 @@ export default function AdminDashboardPage() {
     .map((item) => ({
       mes: item.mes,
       fechado: item.totalFechado,
+      analise: item.totalAnalise,
       perdido: item.totalPerdido,
     }))
 
   // Dados para gráfico de pizza
   const pieChartData = [
     { name: 'Fechados', value: stats.fechados, color: '#22c55e' },
+    { name: 'Em Análise', value: stats.emAnalise, color: '#f59e0b' },
     { name: 'Perdidos', value: stats.perdidos, color: '#ef4444' },
   ]
 
@@ -135,7 +147,7 @@ export default function AdminDashboardPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <KPICard
           title="Total Fechado"
           value={formatCurrency(stats.totalFechado)}
@@ -143,6 +155,13 @@ export default function AdminDashboardPage() {
           trend={stats.fechados > 0 ? 'up' : undefined}
           subtitle={`${stats.fechados} orçamentos`}
           variant="success"
+        />
+        <KPICard
+          title="Em Análise"
+          value={formatCurrency(stats.totalAnalise)}
+          icon={<Clock className="w-6 h-6" />}
+          subtitle={`${stats.emAnalise} orçamentos`}
+          variant="warning"
         />
         <KPICard
           title="Total Perdido"
