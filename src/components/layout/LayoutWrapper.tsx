@@ -1,7 +1,7 @@
 'use client'
 
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
 import { useAuth } from '@/contexts/AuthContext'
@@ -24,37 +24,40 @@ export function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const { isAuthenticated: isAdminAuthenticated, loading: adminLoading } = useAdminAuth()
   const [isClient, setIsClient] = useState(false)
 
-  // Marca quando está no cliente
-  useEffect(() => {
-    setIsClient(true)
-  }, [])
-
   // Normaliza o pathname removendo barra final e basePath
-  let normalizedPathname = pathname || ''
-  if (normalizedPathname.startsWith(basePath)) {
-    normalizedPathname = normalizedPathname.slice(basePath.length)
-  }
-  if (normalizedPathname.endsWith('/') && normalizedPathname.length > 1) {
-    normalizedPathname = normalizedPathname.slice(0, -1)
-  }
-  if (!normalizedPathname) {
-    normalizedPathname = '/'
-  }
+  const normalizedPathname = useMemo(() => {
+    let normalized = pathname || ''
+    if (normalized.startsWith(basePath)) {
+      normalized = normalized.slice(basePath.length)
+    }
+    if (normalized.endsWith('/') && normalized.length > 1) {
+      normalized = normalized.slice(0, -1)
+    }
+    return normalized || '/'
+  }, [pathname])
   
   const isNoLayoutRoute = noLayoutRoutes.includes(normalizedPathname)
   const isAdminRoute = adminRoutes.some(route => normalizedPathname === route || normalizedPathname.startsWith(route + '/'))
 
-  // Rota de login - renderiza imediatamente sem esperar loading
-  if (isNoLayoutRoute) {
-    return <>{children}</>
-  }
+  // Marca quando está no cliente - DEVE vir antes de qualquer return
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
 
   // Proteção das rotas administrativas - redireciona se não autenticado
+  // DEVE vir antes de qualquer return
   useEffect(() => {
     if (isClient && !authLoading && !adminLoading && isAdminRoute && !isAdminAuthenticated) {
       router.push('/admin/login')
     }
-  }, [isClient, pathname, isAdminAuthenticated, authLoading, adminLoading, isAdminRoute, router])
+  }, [isClient, isAdminAuthenticated, authLoading, adminLoading, isAdminRoute, router])
+
+  // Agora sim podemos ter returns condicionais
+
+  // Rota de login - renderiza imediatamente sem layout
+  if (isNoLayoutRoute) {
+    return <>{children}</>
+  }
 
   // Loading inicial (apenas para rotas que não são de login)
   if (authLoading || adminLoading) {
@@ -65,7 +68,7 @@ export function LayoutWrapper({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // Bloqueia acesso às rotas admin se não autenticado
+  // Bloqueia acesso às rotas admin se não autenticado (mostra loading enquanto redireciona)
   if (isAdminRoute && !isAdminAuthenticated) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-dark-950">
