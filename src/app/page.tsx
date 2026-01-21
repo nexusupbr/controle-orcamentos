@@ -47,6 +47,7 @@ export default function ObrasPage() {
   const [loadingModal, setLoadingModal] = useState(false)
   const [saving, setSaving] = useState(false)
   const [quantidades, setQuantidades] = useState<Record<number, number>>({})
+  const [materialSearch, setMaterialSearch] = useState('')
 
   useEffect(() => {
     loadData()
@@ -142,6 +143,7 @@ export default function ObrasPage() {
     setIsModalOpen(false)
     setSelectedObra(null)
     setQuantidades({})
+    setMaterialSearch('')
   }
 
   const handleQuantidadeChange = (materialId: number, delta: number) => {
@@ -651,8 +653,23 @@ export default function ObrasPage() {
           <div className="space-y-4">
             {materiais.length > 0 ? (
               <>
+                {/* Campo de pesquisa de materiais */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" />
+                  <input
+                    type="text"
+                    placeholder="Pesquisar material..."
+                    value={materialSearch}
+                    onChange={(e) => setMaterialSearch(e.target.value)}
+                    className="input pl-10 w-full"
+                    autoFocus
+                  />
+                </div>
+
                 <div className="max-h-96 overflow-y-auto space-y-3 pr-2">
-                  {materiais.map((material) => (
+                  {materiais
+                    .filter(m => m.nome.toLowerCase().includes(materialSearch.toLowerCase()))
+                    .map((material) => (
                     <div 
                       key={material.id}
                       className="flex items-center justify-between p-3 rounded-lg bg-dark-700/50 border border-dark-600"
@@ -691,6 +708,14 @@ export default function ObrasPage() {
                       </div>
                     </div>
                   ))}
+                  
+                  {/* Mensagem quando pesquisa não encontra resultados */}
+                  {materialSearch && materiais.filter(m => m.nome.toLowerCase().includes(materialSearch.toLowerCase())).length === 0 && (
+                    <div className="text-center py-8 text-dark-400">
+                      <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p>Nenhum material encontrado para "{materialSearch}"</p>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
