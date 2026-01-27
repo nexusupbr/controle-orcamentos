@@ -64,3 +64,11 @@ export function maskCurrency(value: string): string {
     maximumFractionDigits: 2,
   })
 }
+
+// Base path para assets em produção (GitHub Pages)
+export const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
+
+// Helper para gerar URLs de assets com basePath
+export function getAssetPath(path: string): string {
+  return `${basePath}${path}`
+}

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Form'
 import { LogIn, User, Lock, AlertCircle } from 'lucide-react'
 import Image from 'next/image'
+import { getAssetPath } from '@/lib/utils'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -42,7 +43,7 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl overflow-hidden shadow-glow mb-4">
             <Image
-              src="/images/logo.jpeg"
+              src={getAssetPath('/images/logo.jpeg')}
               alt="Logo"
               width={80}
               height={80}

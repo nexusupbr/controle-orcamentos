@@ -24,7 +24,7 @@ import {
   FileCheck
 } from 'lucide-react'
 import { useState } from 'react'
-import { cn } from '@/lib/utils'
+import { cn, getAssetPath } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAdminAuth } from '@/contexts/AdminAuthContext'
 
@@ -121,7 +121,7 @@ export function Sidebar() {
               <div className="relative">
                 <div className="w-12 h-12 rounded-xl overflow-hidden shadow-glow group-hover:shadow-glow-lg transition-shadow">
                   <Image
-                    src="/images/logo.jpeg"
+                    src={getAssetPath('/images/logo.jpeg')}
                     alt="Logo"
                     width={48}
                     height={48}
