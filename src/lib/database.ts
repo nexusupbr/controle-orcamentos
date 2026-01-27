@@ -106,13 +106,33 @@ export type FornecedorInput = Partial<Omit<Fornecedor, 'id' | 'created_at' | 'up
 
 // ==================== TIPOS - CLIENTES ====================
 
+export interface EnderecoCliente {
+  id: number
+  cliente_id: number
+  tipo: 'padrao' | 'cobranca' | 'entrega' | 'retirada'
+  descricao: string | null
+  cep: string | null
+  endereco: string | null
+  numero: string | null
+  complemento: string | null
+  bairro: string | null
+  cidade: string | null
+  estado: string | null
+  principal: boolean
+  ativo: boolean
+  created_at?: string
+}
+
 export interface Cliente {
   id: number
   tipo_pessoa: 'PF' | 'PJ'
+  tipo_cadastro: 'cliente' | 'fornecedor' | 'ambos'
   nome: string | null
   cpf: string | null
   rg: string | null
   data_nascimento: string | null
+  produtor_rural: boolean
+  inscricao_produtor_rural: string | null
   razao_social: string | null
   nome_fantasia: string | null
   cnpj: string | null
@@ -137,6 +157,7 @@ export interface Cliente {
   ativo: boolean
   created_at?: string
   updated_at?: string
+  enderecos?: EnderecoCliente[]
 }
 
 export type ClienteInput = Partial<Omit<Cliente, 'id' | 'created_at' | 'updated_at'>>
@@ -644,12 +665,21 @@ export async function deleteFornecedor(id: number): Promise<void> {
 
 // ==================== FUNÇÕES - CLIENTES ====================
 
-export async function fetchClientes(): Promise<Cliente[]> {
-  const { data, error } = await supabase
+export async function fetchClientes(tipoCadastro?: 'cliente' | 'fornecedor' | 'ambos'): Promise<Cliente[]> {
+  let query = supabase
     .from('clientes')
     .select('*')
     .eq('ativo', true)
-    .order('nome')
+  
+  if (tipoCadastro) {
+    if (tipoCadastro === 'cliente') {
+      query = query.in('tipo_cadastro', ['cliente', 'ambos'])
+    } else if (tipoCadastro === 'fornecedor') {
+      query = query.in('tipo_cadastro', ['fornecedor', 'ambos'])
+    }
+  }
+  
+  const { data, error } = await query.order('nome')
 
   if (error) throw error
   return data || []
@@ -658,7 +688,7 @@ export async function fetchClientes(): Promise<Cliente[]> {
 export async function fetchClienteById(id: number): Promise<Cliente | null> {
   const { data, error } = await supabase
     .from('clientes')
-    .select('*')
+    .select('*, enderecos:enderecos_cliente(*)')
     .eq('id', id)
     .single()
 
@@ -716,6 +746,52 @@ export async function deleteCliente(id: number): Promise<void> {
   if (error) throw new Error(error.message)
 }
 
+// ==================== FUNÇÕES - ENDEREÇOS CLIENTES ====================
+
+export async function fetchEnderecosCliente(clienteId: number): Promise<EnderecoCliente[]> {
+  const { data, error } = await supabase
+    .from('enderecos_cliente')
+    .select('*')
+    .eq('cliente_id', clienteId)
+    .eq('ativo', true)
+    .order('principal', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function createEnderecoCliente(endereco: Partial<EnderecoCliente>): Promise<EnderecoCliente> {
+  const { data, error } = await supabase
+    .from('enderecos_cliente')
+    .insert([endereco])
+    .select()
+    .single()
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+export async function updateEnderecoCliente(id: number, updates: Partial<EnderecoCliente>): Promise<EnderecoCliente> {
+  const { data, error } = await supabase
+    .from('enderecos_cliente')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+export async function deleteEnderecoCliente(id: number): Promise<void> {
+  const { error } = await supabase
+    .from('enderecos_cliente')
+    .update({ ativo: false })
+    .eq('id', id)
+
+  if (error) throw new Error(error.message)
+}
+
 // Consulta CNPJ na Receita Federal
 export async function consultarCNPJ(cnpj: string): Promise<any> {
   const cnpjLimpo = cnpj.replace(/\D/g, '')
@@ -754,16 +830,7 @@ export async function fetchNotaFiscalByChave(chave: string): Promise<NotaFiscalE
   return data
 }
 
-export async function createNotaFiscalEntrada(nota: Partial<NotaFiscalEntrada>): Promise<NotaFiscalEntrada> {
-  const { data, error } = await supabase
-    .from('notas_fiscais_entrada')
-    .insert([nota])
-    .select()
-    .single()
-
-  if (error) throw new Error(error.message)
-  return data
-}
+// createNotaFiscalEntrada foi movida para o final do arquivo com suporte a itens
 
 export async function createItemNotaEntrada(item: Partial<ItemNotaEntrada>): Promise<ItemNotaEntrada> {
   const { data, error } = await supabase
@@ -1160,7 +1227,7 @@ export async function fetchVendas(filtros?: {
   return data || []
 }
 
-export async function createVenda(venda: Partial<Venda>): Promise<Venda> {
+export async function createVenda(venda: Partial<Venda>, itens?: Partial<ItemVenda>[]): Promise<Venda> {
   const { data, error } = await supabase
     .from('vendas')
     .insert([venda])
@@ -1168,6 +1235,21 @@ export async function createVenda(venda: Partial<Venda>): Promise<Venda> {
     .single()
 
   if (error) throw new Error(error.message)
+
+  // Criar itens se existirem
+  if (itens && itens.length > 0) {
+    const itensComVenda = itens.map(item => ({
+      ...item,
+      venda_id: data.id
+    }))
+
+    const { error: itensError } = await supabase
+      .from('itens_venda')
+      .insert(itensComVenda)
+
+    if (itensError) throw new Error(itensError.message)
+  }
+
   return data
 }
 
@@ -1407,4 +1489,87 @@ export async function checkImportacaoOFXDuplicada(hashArquivo: string): Promise<
     .eq('hash_arquivo', hashArquivo)
 
   return (data?.length || 0) > 0
+}
+
+// ==================== FUNÇÕES VENDAS COMPLEMENTARES ====================
+
+export async function updateVenda(id: number, venda: Partial<Venda>): Promise<Venda> {
+  const { data, error } = await supabase
+    .from('vendas')
+    .update(venda)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+export async function deleteVenda(id: number): Promise<void> {
+  // Primeiro deletar itens
+  await supabase.from('itens_venda').delete().eq('venda_id', id)
+  
+  const { error } = await supabase.from('vendas').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+export async function createVendaComItens(
+  venda: Partial<Venda>, 
+  itens: Partial<ItemVenda>[]
+): Promise<Venda> {
+  // Criar venda
+  const { data: vendaData, error: vendaError } = await supabase
+    .from('vendas')
+    .insert([venda])
+    .select()
+    .single()
+
+  if (vendaError) throw new Error(vendaError.message)
+
+  // Criar itens
+  if (itens.length > 0) {
+    const itensComVenda = itens.map(item => ({
+      ...item,
+      venda_id: vendaData.id
+    }))
+
+    const { error: itensError } = await supabase
+      .from('itens_venda')
+      .insert(itensComVenda)
+
+    if (itensError) throw new Error(itensError.message)
+  }
+
+  return vendaData
+}
+
+// ==================== FUNÇÕES NOTAS FISCAIS COMPLEMENTARES ====================
+
+export async function createNotaFiscalEntrada(
+  nota: Partial<NotaFiscalEntrada>,
+  itens?: any[]
+): Promise<NotaFiscalEntrada> {
+  const { data: notaData, error: notaError } = await supabase
+    .from('notas_fiscais_entrada')
+    .insert([nota])
+    .select()
+    .single()
+
+  if (notaError) throw new Error(notaError.message)
+
+  // Criar itens se existirem
+  if (itens && itens.length > 0) {
+    const itensComNota = itens.map(item => ({
+      ...item,
+      nota_fiscal_id: notaData.id
+    }))
+
+    const { error: itensError } = await supabase
+      .from('itens_nota_entrada')
+      .insert(itensComNota)
+
+    if (itensError) throw new Error(itensError.message)
+  }
+
+  return notaData
 }

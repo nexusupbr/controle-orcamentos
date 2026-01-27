@@ -4,7 +4,21 @@
 -- =====================================================
 
 -- =====================================================
--- 1. CATEGORIAS DE PRODUTOS
+-- 1. USUÁRIOS (necessário antes de outras tabelas)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS usuarios (
+  id SERIAL PRIMARY KEY,
+  nome TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  senha_hash TEXT,
+  cargo TEXT,
+  ativo BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =====================================================
+-- 2. CATEGORIAS DE PRODUTOS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS categorias (
   id SERIAL PRIMARY KEY,
@@ -33,7 +47,7 @@ INSERT INTO categorias (nome, descricao) VALUES
 ON CONFLICT (nome) DO NOTHING;
 
 -- =====================================================
--- 2. CLASSIFICAÇÕES FISCAIS DE PRODUTOS
+-- 3. CLASSIFICAÇÕES FISCAIS DE PRODUTOS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS classificacoes_fiscais (
   id SERIAL PRIMARY KEY,
@@ -59,7 +73,7 @@ INSERT INTO classificacoes_fiscais (codigo, nome) VALUES
 ON CONFLICT (codigo) DO NOTHING;
 
 -- =====================================================
--- 3. FORNECEDORES
+-- 4. FORNECEDORES
 -- =====================================================
 CREATE TABLE IF NOT EXISTS fornecedores (
   id SERIAL PRIMARY KEY,
@@ -85,7 +99,103 @@ CREATE TABLE IF NOT EXISTS fornecedores (
 );
 
 -- =====================================================
--- 4. PRODUTOS/ESTOQUE (substituindo materiais simples)
+-- 5. CLIENTES (movido para antes de orcamentos)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS clientes (
+  id SERIAL PRIMARY KEY,
+  tipo_pessoa TEXT CHECK (tipo_pessoa IN ('PF', 'PJ')) DEFAULT 'PF',
+  tipo_cadastro TEXT CHECK (tipo_cadastro IN ('cliente', 'fornecedor', 'ambos')) DEFAULT 'cliente',
+  
+  -- Pessoa Física
+  nome TEXT,
+  cpf TEXT UNIQUE,
+  rg TEXT,
+  data_nascimento DATE,
+  produtor_rural BOOLEAN DEFAULT FALSE,
+  inscricao_produtor_rural TEXT,
+  
+  -- Pessoa Jurídica
+  razao_social TEXT,
+  nome_fantasia TEXT,
+  cnpj TEXT UNIQUE,
+  inscricao_estadual TEXT,
+  inscricao_municipal TEXT,
+  
+  -- Endereço Principal
+  cep TEXT,
+  endereco TEXT,
+  numero TEXT,
+  complemento TEXT,
+  bairro TEXT,
+  cidade TEXT,
+  estado TEXT,
+  
+  -- Contato
+  telefone TEXT,
+  celular TEXT,
+  email TEXT,
+  
+  -- Dados fiscais
+  contribuinte_icms BOOLEAN DEFAULT FALSE,
+  regime_tributario TEXT,
+  
+  -- Anexos (URLs dos arquivos)
+  anexos JSONB DEFAULT '[]',
+  
+  observacoes TEXT,
+  limite_credito DECIMAL(15,2) DEFAULT 0,
+  saldo_devedor DECIMAL(15,2) DEFAULT 0,
+  ativo BOOLEAN DEFAULT TRUE,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =====================================================
+-- 6. OBRAS (necessário antes de orcamentos e vendas)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS obras (
+  id SERIAL PRIMARY KEY,
+  cliente_id INT REFERENCES clientes(id),
+  nome TEXT NOT NULL,
+  descricao TEXT,
+  endereco TEXT,
+  cidade TEXT,
+  estado TEXT,
+  status TEXT DEFAULT 'em_andamento',
+  data_inicio DATE,
+  data_previsao DATE,
+  data_conclusao DATE,
+  valor_total DECIMAL(15,2) DEFAULT 0,
+  ativo BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =====================================================
+-- 7. ORÇAMENTOS (necessário antes de vendas e lancamentos)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS orcamentos (
+  id SERIAL PRIMARY KEY,
+  numero TEXT,
+  cliente_id INT REFERENCES clientes(id),
+  obra_id INT REFERENCES obras(id),
+  data_orcamento DATE DEFAULT CURRENT_DATE,
+  validade DATE,
+  valor_produtos DECIMAL(15,2) DEFAULT 0,
+  valor_servicos DECIMAL(15,2) DEFAULT 0,
+  valor_desconto DECIMAL(15,2) DEFAULT 0,
+  valor_total DECIMAL(15,2) DEFAULT 0,
+  margem_lucro DECIMAL(5,2) DEFAULT 0,
+  custo_estimado DECIMAL(15,2) DEFAULT 0,
+  status TEXT DEFAULT 'pendente',
+  observacoes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =====================================================
+-- 8. PRODUTOS/ESTOQUE
 -- =====================================================
 CREATE TABLE IF NOT EXISTS produtos (
   id SERIAL PRIMARY KEY,
@@ -132,7 +242,7 @@ CREATE TABLE IF NOT EXISTS produtos (
 CREATE INDEX IF NOT EXISTS idx_produtos_nome ON produtos(LOWER(nome));
 
 -- =====================================================
--- 5. MOVIMENTAÇÕES DE ESTOQUE
+-- 9. MOVIMENTAÇÕES DE ESTOQUE
 -- =====================================================
 CREATE TABLE IF NOT EXISTS movimentacoes_estoque (
   id SERIAL PRIMARY KEY,
@@ -155,26 +265,13 @@ CREATE TABLE IF NOT EXISTS movimentacoes_estoque (
 );
 
 -- =====================================================
--- 6. CLIENTES
+-- 10. ENDEREÇOS ADICIONAIS
 -- =====================================================
-CREATE TABLE IF NOT EXISTS clientes (
+CREATE TABLE IF NOT EXISTS enderecos_cliente (
   id SERIAL PRIMARY KEY,
-  tipo_pessoa TEXT CHECK (tipo_pessoa IN ('PF', 'PJ')) DEFAULT 'PF',
-  
-  -- Pessoa Física
-  nome TEXT,
-  cpf TEXT UNIQUE,
-  rg TEXT,
-  data_nascimento DATE,
-  
-  -- Pessoa Jurídica
-  razao_social TEXT,
-  nome_fantasia TEXT,
-  cnpj TEXT UNIQUE,
-  inscricao_estadual TEXT,
-  inscricao_municipal TEXT,
-  
-  -- Endereço
+  cliente_id INT REFERENCES clientes(id) ON DELETE CASCADE,
+  tipo TEXT CHECK (tipo IN ('padrao', 'cobranca', 'entrega', 'retirada')) DEFAULT 'entrega',
+  descricao TEXT,
   cep TEXT,
   endereco TEXT,
   numero TEXT,
@@ -182,30 +279,13 @@ CREATE TABLE IF NOT EXISTS clientes (
   bairro TEXT,
   cidade TEXT,
   estado TEXT,
-  
-  -- Contato
-  telefone TEXT,
-  celular TEXT,
-  email TEXT,
-  
-  -- Dados fiscais
-  contribuinte_icms BOOLEAN DEFAULT FALSE,
-  regime_tributario TEXT,
-  
-  -- Anexos (URLs dos arquivos)
-  anexos JSONB DEFAULT '[]',
-  
-  observacoes TEXT,
-  limite_credito DECIMAL(15,2) DEFAULT 0,
-  saldo_devedor DECIMAL(15,2) DEFAULT 0,
+  principal BOOLEAN DEFAULT FALSE,
   ativo BOOLEAN DEFAULT TRUE,
-  
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- =====================================================
--- 7. NOTAS FISCAIS DE ENTRADA (XML)
+-- 11. NOTAS FISCAIS DE ENTRADA (XML)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS notas_fiscais_entrada (
   id SERIAL PRIMARY KEY,
@@ -246,7 +326,7 @@ CREATE TABLE IF NOT EXISTS notas_fiscais_entrada (
 );
 
 -- =====================================================
--- 8. ITENS DA NOTA FISCAL DE ENTRADA
+-- 12. ITENS DA NOTA FISCAL DE ENTRADA
 -- =====================================================
 CREATE TABLE IF NOT EXISTS itens_nota_entrada (
   id SERIAL PRIMARY KEY,
@@ -274,7 +354,7 @@ CREATE TABLE IF NOT EXISTS itens_nota_entrada (
 );
 
 -- =====================================================
--- 9. CT-e (Conhecimento de Transporte)
+-- 13. CT-e (Conhecimento de Transporte)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS cte_fretes (
   id SERIAL PRIMARY KEY,
@@ -300,12 +380,13 @@ CREATE TABLE IF NOT EXISTS cte_fretes (
 );
 
 -- =====================================================
--- 10. CATEGORIAS FINANCEIRAS
+-- 14. CATEGORIAS FINANCEIRAS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS categorias_financeiras (
   id SERIAL PRIMARY KEY,
   nome TEXT NOT NULL,
   tipo TEXT CHECK (tipo IN ('despesa', 'receita', 'aplicacao')) NOT NULL,
+  cor TEXT DEFAULT '#3B82F6',
   com_nota_fiscal BOOLEAN DEFAULT FALSE,
   ativo BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -361,7 +442,7 @@ INSERT INTO categorias_financeiras (nome, tipo) VALUES
 ON CONFLICT DO NOTHING;
 
 -- =====================================================
--- 11. CONTAS BANCÁRIAS
+-- 15. CONTAS BANCÁRIAS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS contas_bancarias (
   id SERIAL PRIMARY KEY,
@@ -382,7 +463,7 @@ CREATE TABLE IF NOT EXISTS contas_bancarias (
 INSERT INTO contas_bancarias (nome, tipo) VALUES ('Caixa Geral', 'caixa') ON CONFLICT DO NOTHING;
 
 -- =====================================================
--- 12. LANÇAMENTOS FINANCEIROS (CAIXA)
+-- 16. LANÇAMENTOS FINANCEIROS (CAIXA)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS lancamentos_financeiros (
   id SERIAL PRIMARY KEY,
@@ -433,7 +514,7 @@ CREATE TABLE IF NOT EXISTS lancamentos_financeiros (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lancamentos_ofx ON lancamentos_financeiros(conta_id, ofx_fitid) WHERE ofx_fitid IS NOT NULL;
 
 -- =====================================================
--- 13. CONTAS A PAGAR
+-- 17. CONTAS A PAGAR
 -- =====================================================
 CREATE TABLE IF NOT EXISTS contas_pagar (
   id SERIAL PRIMARY KEY,
@@ -465,7 +546,7 @@ CREATE TABLE IF NOT EXISTS contas_pagar (
 );
 
 -- =====================================================
--- 14. CONTAS A RECEBER
+-- 18. CONTAS A RECEBER
 -- =====================================================
 CREATE TABLE IF NOT EXISTS contas_receber (
   id SERIAL PRIMARY KEY,
@@ -494,7 +575,7 @@ CREATE TABLE IF NOT EXISTS contas_receber (
 );
 
 -- =====================================================
--- 15. VENDAS / NOTAS FISCAIS DE SAÍDA
+-- 19. VENDAS / NOTAS FISCAIS DE SAÍDA
 -- =====================================================
 CREATE TABLE IF NOT EXISTS vendas (
   id SERIAL PRIMARY KEY,
@@ -531,7 +612,7 @@ CREATE TABLE IF NOT EXISTS vendas (
 );
 
 -- =====================================================
--- 16. ITENS DA VENDA
+-- 20. ITENS DA VENDA
 -- =====================================================
 CREATE TABLE IF NOT EXISTS itens_venda (
   id SERIAL PRIMARY KEY,
@@ -553,7 +634,7 @@ CREATE TABLE IF NOT EXISTS itens_venda (
 );
 
 -- =====================================================
--- 17. IMPORTAÇÕES OFX (controle de duplicatas)
+-- 21. IMPORTAÇÕES OFX (controle de duplicatas)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS importacoes_ofx (
   id SERIAL PRIMARY KEY,
@@ -568,7 +649,7 @@ CREATE TABLE IF NOT EXISTS importacoes_ofx (
 );
 
 -- =====================================================
--- 18. ANEXOS (arquivos de clientes, NFs, etc)
+-- 22. ANEXOS (arquivos de clientes, NFs, etc)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS anexos (
   id SERIAL PRIMARY KEY,
@@ -582,7 +663,7 @@ CREATE TABLE IF NOT EXISTS anexos (
 );
 
 -- =====================================================
--- 19. ATUALIZAR TABELA DE ORÇAMENTOS
+-- ATUALIZAR TABELA DE ORÇAMENTOS
 -- =====================================================
 ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id INT REFERENCES clientes(id);
 ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS margem_lucro DECIMAL(5,2) DEFAULT 0;
@@ -590,7 +671,7 @@ ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS valor_desconto DECIMAL(15,2) DEF
 ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS custo_estimado DECIMAL(15,2) DEFAULT 0;
 
 -- =====================================================
--- 20. FUNÇÕES AUXILIARES
+-- FUNÇÕES AUXILIARES
 -- =====================================================
 
 -- Função para atualizar custo médio do produto
