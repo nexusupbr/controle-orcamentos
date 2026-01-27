@@ -49,9 +49,11 @@ export function LoadingSpinner({ size = 'md' }: LoadingSpinnerProps) {
 interface BadgeProps {
   children: React.ReactNode
   variant?: 'success' | 'danger' | 'warning' | 'info' | 'primary' | 'secondary'
+  size?: 'sm' | 'md' | 'lg'
+  className?: string
 }
 
-export function Badge({ children, variant = 'success' }: BadgeProps) {
+export function Badge({ children, variant = 'success', size = 'md', className }: BadgeProps) {
   const variants = {
     success: 'badge-success',
     danger: 'badge-danger',
@@ -61,8 +63,14 @@ export function Badge({ children, variant = 'success' }: BadgeProps) {
     secondary: 'bg-dark-600 text-dark-300',
   }
 
+  const sizes = {
+    sm: 'text-xs px-1.5 py-0.5',
+    md: 'text-xs px-2 py-1',
+    lg: 'text-sm px-3 py-1.5',
+  }
+
   return (
-    <span className={cn('badge', variants[variant])}>
+    <span className={cn('badge', variants[variant], sizes[size], className)}>
       {children}
     </span>
   )
