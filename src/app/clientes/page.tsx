@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { 
   Plus, Edit2, Trash2, Search, User, Building2, 
   Phone, Mail, MapPin, Upload, FileText,
-  RefreshCw, AlertTriangle, Truck, Users
+  RefreshCw, AlertTriangle, Truck, Users, FileUp, CheckCircle, XCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -34,6 +34,11 @@ const maskPhone = (value: string) => {
 
 type TipoCadastroFilter = 'todos' | 'cliente' | 'fornecedor'
 
+interface ImportResult {
+  success: number
+  errors: { linha: number; erro: string }[]
+}
+
 export default function ClientesPage() {
   const [clientes, setClientes] = useState<Cliente[]>([])
   const [loading, setLoading] = useState(true)
@@ -46,6 +51,12 @@ export default function ClientesPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [consultandoCNPJ, setConsultandoCNPJ] = useState(false)
+  
+  // Estados para importação CSV
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const csvInputRef = useRef<HTMLInputElement>(null)
   
   const [isEnderecoModalOpen, setIsEnderecoModalOpen] = useState(false)
   const [enderecos, setEnderecos] = useState<EnderecoCliente[]>([])
@@ -219,6 +230,133 @@ export default function ClientesPage() {
 
   const removerAnexo = (index: number) => { setAnexos(prev => prev.filter((_, i) => i !== index)) }
 
+  // Função para importar CSV de clientes/fornecedores
+  const parseCSVLine = (line: string, delimiter: string = ';'): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === delimiter && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    result.push(current.trim())
+    return result
+  }
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setImporting(true)
+    setImportResult(null)
+
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string
+        const lines = text.split('\n').filter(line => line.trim())
+        
+        // Detectar delimitador (ponto e vírgula ou vírgula)
+        const delimiter = lines[0].includes(';') ? ';' : ','
+        
+        // Pular cabeçalho
+        const dataLines = lines.slice(1)
+        
+        let success = 0
+        const errors: { linha: number; erro: string }[] = []
+
+        for (let i = 0; i < dataLines.length; i++) {
+          const line = dataLines[i]
+          if (!line.trim()) continue
+          
+          try {
+            const columns = parseCSVLine(line, delimiter)
+            
+            // Mapear colunas do CSV para campos do sistema
+            // Formato: ID;Tipo Pessoa;Tipo Cadastro;CNPJ/CPF;Razao Social/Nome;Fantasia;Endereco;Numero;Bairro;Complemento;CEP;Cidade;Codigo IBGE;UF;Contato;Telefone;Celular;Fax;E-mail;IE/RG;IM;Suframa;Obs;Data Nasc;Site;Consumidor Final;Regime Trib;Situacao;ID Vendedor;Nome Vendedor
+            const tipoPessoa = columns[1]?.toUpperCase() === 'PJ' ? 'PJ' : 'PF'
+            const tipoCadastro = columns[2]?.toLowerCase().includes('fornecedor') 
+              ? 'fornecedor' 
+              : columns[2]?.toLowerCase().includes('ambos') 
+                ? 'ambos' 
+                : 'cliente'
+            const documento = columns[3]?.replace(/\D/g, '') || ''
+            const nomeRazao = columns[4] || ''
+            const fantasia = columns[5] || ''
+            const endereco = columns[6] || ''
+            const numero = columns[7] || ''
+            const bairro = columns[8] || ''
+            const complemento = columns[9] || ''
+            const cep = columns[10]?.replace(/\D/g, '') || ''
+            const cidade = columns[11] || ''
+            const estado = columns[13] || ''
+            const telefone = columns[15]?.replace(/\D/g, '') || ''
+            const celular = columns[16]?.replace(/\D/g, '') || ''
+            const email = columns[18] || ''
+            const ieRg = columns[19] || ''
+            const im = columns[20] || ''
+            const observacoes = columns[22] || ''
+            const dataNascimento = columns[23] || ''
+            const regimeTributario = columns[26] || ''
+            const situacao = columns[27]?.toLowerCase().includes('ativo') !== false
+
+            if (!nomeRazao && !documento) {
+              errors.push({ linha: i + 2, erro: 'Nome/Razão Social e documento não informados' })
+              continue
+            }
+
+            const clienteData: any = {
+              tipo_pessoa: tipoPessoa,
+              tipo_cadastro: tipoCadastro,
+              nome: tipoPessoa === 'PF' ? nomeRazao : null,
+              cpf: tipoPessoa === 'PF' ? documento : null,
+              rg: tipoPessoa === 'PF' ? ieRg : null,
+              data_nascimento: tipoPessoa === 'PF' && dataNascimento && dataNascimento !== '0000-00-00' ? dataNascimento : null,
+              razao_social: tipoPessoa === 'PJ' ? nomeRazao : null,
+              nome_fantasia: tipoPessoa === 'PJ' ? fantasia : null,
+              cnpj: tipoPessoa === 'PJ' ? documento : null,
+              inscricao_estadual: tipoPessoa === 'PJ' ? ieRg : null,
+              inscricao_municipal: tipoPessoa === 'PJ' ? im : null,
+              cep, endereco, numero, complemento, bairro, cidade, estado,
+              telefone, celular, email,
+              regime_tributario: regimeTributario,
+              observacoes,
+              ativo: situacao,
+              contribuinte_icms: !!ieRg,
+              limite_credito: 0,
+              anexos: []
+            }
+
+            await createCliente(clienteData)
+            success++
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Erro desconhecido'
+            errors.push({ linha: i + 2, erro: message })
+          }
+        }
+
+        setImportResult({ success, errors })
+        await loadData()
+      } catch (err) {
+        console.error('Erro ao processar CSV:', err)
+        setImportResult({ success: 0, errors: [{ linha: 0, erro: 'Erro ao processar arquivo CSV' }] })
+      } finally {
+        setImporting(false)
+        if (csvInputRef.current) csvInputRef.current.value = ''
+      }
+    }
+
+    reader.readAsText(file, 'UTF-8')
+  }
+
   const getTipoEnderecoLabel = (tipo: string) => {
     const labels: Record<string, string> = { padrao: 'Padrão', cobranca: 'Cobrança', entrega: 'Entrega', retirada: 'Retirada' }
     return labels[tipo] || tipo
@@ -233,7 +371,12 @@ export default function ClientesPage() {
           <h1 className="text-2xl lg:text-3xl font-bold font-heading text-white">Clientes e Fornecedores</h1>
           <p className="text-dark-400 mt-1">Cadastre e gerencie clientes e fornecedores em um só lugar</p>
         </div>
-        <Button onClick={() => openModal()} leftIcon={<Plus className="w-5 h-5" />}>Novo Cadastro</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setIsImportModalOpen(true)} leftIcon={<FileUp className="w-5 h-5" />}>
+            Importar CSV
+          </Button>
+          <Button onClick={() => openModal()} leftIcon={<Plus className="w-5 h-5" />}>Novo Cadastro</Button>
+        </div>
       </div>
 
       <div className="flex gap-2">
@@ -375,6 +518,78 @@ export default function ClientesPage() {
           <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm text-dark-300 mb-2">Estado</label><select value={enderecoForm.estado} onChange={(e) => setEnderecoForm({ ...enderecoForm, estado: e.target.value })} className="input w-full"><option value="">Selecione...</option>{['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'].map(uf => (<option key={uf} value={uf}>{uf}</option>))}</select></div><div className="flex items-end"><label className="flex items-center gap-2 cursor-pointer pb-2"><input type="checkbox" checked={enderecoForm.principal} onChange={(e) => setEnderecoForm({ ...enderecoForm, principal: e.target.checked })} className="w-5 h-5 rounded text-primary-500" /><span className="text-white">Endereço Principal</span></label></div></div>
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700"><Button type="button" variant="secondary" onClick={() => setIsEnderecoModalOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</Button></div>
         </form>
+      </Modal>
+
+      {/* Modal de Importação CSV */}
+      <Modal isOpen={isImportModalOpen} onClose={() => { setIsImportModalOpen(false); setImportResult(null) }} title="Importar Clientes/Fornecedores" size="md">
+        <div className="space-y-6">
+          <div className="p-4 bg-dark-700/50 rounded-lg">
+            <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
+            <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por ponto e vírgula (;) ou vírgula (,):</p>
+            <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
+              ID;Tipo Pessoa;Tipo Cadastro;CNPJ/CPF;Razao Social/Nome;Fantasia;Endereco;Numero;Bairro;Complemento;CEP;Cidade;Codigo IBGE;UF;Contato;Telefone;Celular;Fax;E-mail;IE/RG;IM;...
+            </div>
+          </div>
+
+          <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv,.txt"
+              onChange={handleImportCSV}
+              className="hidden"
+            />
+            <FileUp className="w-12 h-12 text-dark-400 mb-4" />
+            <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
+            <Button
+              onClick={() => csvInputRef.current?.click()}
+              disabled={importing}
+              leftIcon={importing ? <LoadingSpinner size="sm" /> : <Upload className="w-4 h-4" />}
+            >
+              {importing ? 'Importando...' : 'Selecionar Arquivo'}
+            </Button>
+          </div>
+
+          {importResult && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg flex-1">
+                  <CheckCircle className="w-5 h-5 text-green-400" />
+                  <div>
+                    <p className="text-green-400 font-medium">{importResult.success}</p>
+                    <p className="text-dark-400 text-xs">Importados com sucesso</p>
+                  </div>
+                </div>
+                {importResult.errors.length > 0 && (
+                  <div className="flex items-center gap-2 p-3 bg-red-500/10 rounded-lg flex-1">
+                    <XCircle className="w-5 h-5 text-red-400" />
+                    <div>
+                      <p className="text-red-400 font-medium">{importResult.errors.length}</p>
+                      <p className="text-dark-400 text-xs">Erros encontrados</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {importResult.errors.length > 0 && (
+                <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
+                  <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
+                  {importResult.errors.map((err, i) => (
+                    <p key={i} className="text-red-400 text-xs mb-1">
+                      Linha {err.linha}: {err.erro}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end pt-4 border-t border-dark-700">
+            <Button variant="secondary" onClick={() => { setIsImportModalOpen(false); setImportResult(null) }}>
+              Fechar
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   )

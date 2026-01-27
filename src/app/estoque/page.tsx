@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { 
   Plus, Edit2, Trash2, Search, Package, Eye, 
   AlertTriangle, TrendingUp, Filter, Download, 
-  ChevronDown, ChevronUp, History, DollarSign
+  ChevronDown, ChevronUp, History, DollarSign,
+  FileUp, Upload, CheckCircle, XCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, Select } from '@/components/ui/Form'
@@ -18,6 +19,11 @@ import {
   checkProdutoDuplicado
 } from '@/lib/database'
 import { formatCurrency } from '@/lib/utils'
+
+interface ImportResult {
+  success: number
+  errors: { linha: number; erro: string }[]
+}
 
 // Classificações fiscais padrão
 const classificacoesPadrao = [
@@ -51,6 +57,12 @@ export default function EstoquePage() {
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false)
   const [isHistoricoModalOpen, setIsHistoricoModalOpen] = useState(false)
   const [isFormadorPrecoOpen, setIsFormadorPrecoOpen] = useState(false)
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  
+  // Estados para importação CSV
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const csvInputRef = useRef<HTMLInputElement>(null)
   
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
@@ -262,6 +274,150 @@ export default function EstoquePage() {
     }
   }
 
+  // Função para importar CSV de produtos
+  const parseCSVLine = (line: string, delimiter: string = ','): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === delimiter && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    result.push(current.trim())
+    return result
+  }
+
+  const parseNumber = (value: string): number => {
+    if (!value) return 0
+    // Remove caracteres não numéricos exceto vírgula e ponto
+    const cleaned = value.replace(/[^\d,.-]/g, '').replace(',', '.')
+    return parseFloat(cleaned) || 0
+  }
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setImporting(true)
+    setImportResult(null)
+
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string
+        const lines = text.split('\n').filter(line => line.trim())
+        
+        // Detectar delimitador (vírgula ou ponto e vírgula)
+        const delimiter = lines[0].includes(';') ? ';' : ','
+        
+        // Pular cabeçalho
+        const dataLines = lines.slice(1)
+        
+        let success = 0
+        const errors: { linha: number; erro: string }[] = []
+
+        for (let i = 0; i < dataLines.length; i++) {
+          const line = dataLines[i]
+          if (!line.trim()) continue
+          
+          try {
+            const columns = parseCSVLine(line, delimiter)
+            
+            // Mapear colunas do CSV para campos do sistema
+            // Formato: Codigo;Tipo;Nome;Fornecedor;ID Fornecedor;Marca;Est Min;Est Max;Est Atual;Unidade;Variado;Valor Venda;Valor Custo;Peso;Peso Liq;ICMS;IPI;PIS;COFINS;Un Trib;Cod Benef;CEST;NCM;Origem;Ordem;GTIN;Tipo Class;Obs;ID Cat;ID Subcat;Situacao;Tamanho;Localizacao
+            const codigo = columns[0] || ''
+            const tipo = columns[1]?.toLowerCase() || 'produto'
+            const nome = columns[2] || ''
+            const fornecedorNome = columns[3] || ''
+            const fornecedorId = columns[4] ? parseInt(columns[4]) : null
+            const marca = columns[5] || ''
+            const estoqueMinimo = parseNumber(columns[6])
+            const estoqueMaximo = parseNumber(columns[7])
+            const estoqueAtual = parseNumber(columns[8])
+            const unidade = columns[9] || 'UN'
+            const valorVenda = parseNumber(columns[11])
+            const valorCusto = parseNumber(columns[12])
+            const peso = parseNumber(columns[13])
+            const ncm = columns[22] || ''
+            const origem = columns[23] || '0'
+            const codigoBarras = columns[25] || ''
+            const classificacaoFiscal = columns[26] || '07'
+            const observacoes = columns[27] || ''
+            const situacao = columns[30]?.toLowerCase().includes('ativo') !== false
+            const tamanho = columns[31] || ''
+            const localizacao = columns[32] || ''
+
+            if (!nome) {
+              errors.push({ linha: i + 2, erro: 'Nome do produto não informado' })
+              continue
+            }
+
+            // Verificar se já existe produto similar
+            const produtoExistente = produtos.find(p => 
+              p.codigo === codigo || 
+              p.nome.toLowerCase() === nome.toLowerCase() ||
+              (codigoBarras && p.codigo_barras === codigoBarras)
+            )
+
+            if (produtoExistente) {
+              errors.push({ linha: i + 2, erro: `Produto similar já existe: ${produtoExistente.nome}` })
+              continue
+            }
+
+            const produtoData: any = {
+              codigo,
+              codigo_barras: codigoBarras,
+              gtin_ean: codigoBarras,
+              nome,
+              descricao: observacoes,
+              unidade: unidade.toUpperCase(),
+              ncm: ncm.replace(/\D/g, ''),
+              origem,
+              classificacao_fiscal: classificacaoFiscal,
+              valor_custo: valorCusto,
+              valor_venda: valorVenda,
+              custo_medio: valorCusto,
+              margem_lucro: valorCusto > 0 ? ((valorVenda - valorCusto) / valorCusto) * 100 : 0,
+              quantidade_estoque: estoqueAtual,
+              estoque_minimo: estoqueMinimo,
+              estoque_maximo: estoqueMaximo,
+              marca,
+              peso_kg: peso,
+              tamanho,
+              localizacao,
+              ativo: situacao
+            }
+
+            await createProduto(produtoData)
+            success++
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Erro desconhecido'
+            errors.push({ linha: i + 2, erro: message })
+          }
+        }
+
+        setImportResult({ success, errors })
+        await loadData()
+      } catch (err) {
+        console.error('Erro ao processar CSV:', err)
+        setImportResult({ success: 0, errors: [{ linha: 0, erro: 'Erro ao processar arquivo CSV' }] })
+      } finally {
+        setImporting(false)
+        if (csvInputRef.current) csvInputRef.current.value = ''
+      }
+    }
+
+    reader.readAsText(file, 'UTF-8')
+  }
+
   // Ver histórico de movimentações
   const handleVerHistorico = async (produto: Produto) => {
     setSelectedProduto(produto)
@@ -356,6 +512,13 @@ export default function EstoquePage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setIsImportModalOpen(true)}
+            leftIcon={<FileUp className="w-4 h-4" />}
+          >
+            Importar CSV
+          </Button>
           <Button
             variant="secondary"
             onClick={() => openCategoriaModal()}
@@ -1073,6 +1236,81 @@ export default function EstoquePage() {
             </Button>
             <Button onClick={aplicarFormadorPreco}>
               Aplicar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal de Importação CSV de Produtos */}
+      <Modal isOpen={isImportModalOpen} onClose={() => { setIsImportModalOpen(false); setImportResult(null) }} title="Importar Produtos" size="md">
+        <div className="space-y-6">
+          <div className="p-4 bg-dark-700/50 rounded-lg">
+            <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
+            <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por vírgula (,) ou ponto e vírgula (;):</p>
+            <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
+              Código,Tipo,Nome,Fornecedor,ID Fornec,Marca,Est.Min,Est.Max,Est.Atual,Unidade,Variado,Valor Venda,Valor Custo,...NCM,Origem,...GTIN,Tipo Class,...
+            </div>
+          </div>
+
+          <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv,.txt"
+              onChange={handleImportCSV}
+              className="hidden"
+            />
+            <FileUp className="w-12 h-12 text-dark-400 mb-4" />
+            <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
+            <Button
+              onClick={() => csvInputRef.current?.click()}
+              disabled={importing}
+              leftIcon={importing ? <LoadingSpinner size="sm" /> : <Upload className="w-4 h-4" />}
+            >
+              {importing ? 'Importando...' : 'Selecionar Arquivo'}
+            </Button>
+          </div>
+
+          {importResult && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg flex-1">
+                  <CheckCircle className="w-5 h-5 text-green-400" />
+                  <div>
+                    <p className="text-green-400 font-medium">{importResult.success}</p>
+                    <p className="text-dark-400 text-xs">Importados com sucesso</p>
+                  </div>
+                </div>
+                {importResult.errors.length > 0 && (
+                  <div className="flex items-center gap-2 p-3 bg-red-500/10 rounded-lg flex-1">
+                    <XCircle className="w-5 h-5 text-red-400" />
+                    <div>
+                      <p className="text-red-400 font-medium">{importResult.errors.length}</p>
+                      <p className="text-dark-400 text-xs">Erros/Duplicados</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {importResult.errors.length > 0 && (
+                <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
+                  <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
+                  {importResult.errors.slice(0, 50).map((err, i) => (
+                    <p key={i} className="text-red-400 text-xs mb-1">
+                      Linha {err.linha}: {err.erro}
+                    </p>
+                  ))}
+                  {importResult.errors.length > 50 && (
+                    <p className="text-dark-500 text-xs mt-2">... e mais {importResult.errors.length - 50} erros</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end pt-4 border-t border-dark-700">
+            <Button variant="secondary" onClick={() => { setIsImportModalOpen(false); setImportResult(null) }}>
+              Fechar
             </Button>
           </div>
         </div>
