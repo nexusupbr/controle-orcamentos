@@ -1,8 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import { AuthProvider } from '@/contexts/AuthContext'
-import { AdminAuthProvider } from '@/contexts/AdminAuthContext'
-import { LayoutWrapper } from '@/components/layout/LayoutWrapper'
+import { Providers } from '@/components/Providers'
 
 const basePath = process.env.NODE_ENV === 'production' ? '/controle-orcamentos' : ''
 
@@ -22,13 +20,9 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <body className="min-h-screen">
-        <AuthProvider>
-          <AdminAuthProvider>
-            <LayoutWrapper>
-              {children}
-            </LayoutWrapper>
-          </AdminAuthProvider>
-        </AuthProvider>
+        <Providers>
+          {children}
+        </Providers>
       </body>
     </html>
   )

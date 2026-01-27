@@ -39,6 +39,39 @@ interface ImportResult {
   errors: { linha: number; erro: string }[]
 }
 
+interface ImportPreviewItem {
+  linha: number
+  selected: boolean
+  isDuplicate: boolean
+  duplicateReason?: string
+  data: {
+    tipo_pessoa: 'PF' | 'PJ'
+    tipo_cadastro: 'cliente' | 'fornecedor' | 'ambos'
+    nome: string | null
+    cpf: string | null
+    rg: string | null
+    data_nascimento: string | null
+    razao_social: string | null
+    nome_fantasia: string | null
+    cnpj: string | null
+    inscricao_estadual: string | null
+    inscricao_municipal: string | null
+    cep: string
+    endereco: string
+    numero: string
+    complemento: string
+    bairro: string
+    cidade: string
+    estado: string
+    telefone: string
+    celular: string
+    email: string
+    regime_tributario: string
+    observacoes: string
+    ativo: boolean
+  }
+}
+
 export default function ClientesPage() {
   const [clientes, setClientes] = useState<Cliente[]>([])
   const [loading, setLoading] = useState(true)
@@ -46,6 +79,10 @@ export default function ClientesPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterTipo, setFilterTipo] = useState<'todos' | 'PF' | 'PJ'>('todos')
   const [filterCadastro, setFilterCadastro] = useState<TipoCadastroFilter>('todos')
+  
+  // Estados para seleção em massa
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
   
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -56,6 +93,8 @@ export default function ClientesPage() {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [importPreview, setImportPreview] = useState<ImportPreviewItem[]>([])
+  const [importStep, setImportStep] = useState<'select' | 'preview' | 'result'>('select')
   const csvInputRef = useRef<HTMLInputElement>(null)
   
   const [isEnderecoModalOpen, setIsEnderecoModalOpen] = useState(false)
@@ -190,6 +229,57 @@ export default function ClientesPage() {
     try { await deleteCliente(id); await loadData() } catch (err) { console.error('Erro ao excluir:', err); alert('Erro ao excluir registro') }
   }
 
+  // Funções para seleção em massa
+  const toggleSelectItem = (id: number) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) {
+        newSet.delete(id)
+      } else {
+        newSet.add(id)
+      }
+      return newSet
+    })
+  }
+
+  const toggleSelectAllClientes = () => {
+    if (selectedIds.size === filteredClientes.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredClientes.map(c => c.id)))
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return
+    
+    const count = selectedIds.size
+    if (!confirm(`Tem certeza que deseja excluir ${count} registro(s)?\n\nEsta ação não pode ser desfeita.`)) return
+    
+    setDeleting(true)
+    let successCount = 0
+    let errorCount = 0
+    
+    const idsArray = Array.from(selectedIds)
+    for (const id of idsArray) {
+      try {
+        await deleteCliente(id)
+        successCount++
+      } catch (err) {
+        console.error(`Erro ao excluir cliente ${id}:`, err)
+        errorCount++
+      }
+    }
+    
+    setSelectedIds(new Set())
+    await loadData()
+    setDeleting(false)
+    
+    if (errorCount > 0) {
+      alert(`${successCount} excluído(s) com sucesso.\n${errorCount} erro(s) ao excluir.`)
+    }
+  }
+
   const openEnderecoModal = (endereco?: EnderecoCliente) => {
     if (endereco) {
       setEditingEnderecoId(endereco.id)
@@ -251,12 +341,10 @@ export default function ClientesPage() {
     return result
   }
 
-  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Função para carregar CSV e mostrar preview
+  const handleLoadCSVPreview = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-
-    setImporting(true)
-    setImportResult(null)
 
     const reader = new FileReader()
     reader.onload = async (event) => {
@@ -264,56 +352,67 @@ export default function ClientesPage() {
         const text = event.target?.result as string
         const lines = text.split('\n').filter(line => line.trim())
         
-        // Detectar delimitador (ponto e vírgula ou vírgula)
         const delimiter = lines[0].includes(';') ? ';' : ','
-        
-        // Pular cabeçalho
         const dataLines = lines.slice(1)
         
-        let success = 0
-        const errors: { linha: number; erro: string }[] = []
+        const previewItems: ImportPreviewItem[] = []
 
         for (let i = 0; i < dataLines.length; i++) {
           const line = dataLines[i]
           if (!line.trim()) continue
           
-          try {
-            const columns = parseCSVLine(line, delimiter)
-            
-            // Mapear colunas do CSV para campos do sistema
-            // Formato: ID;Tipo Pessoa;Tipo Cadastro;CNPJ/CPF;Razao Social/Nome;Fantasia;Endereco;Numero;Bairro;Complemento;CEP;Cidade;Codigo IBGE;UF;Contato;Telefone;Celular;Fax;E-mail;IE/RG;IM;Suframa;Obs;Data Nasc;Site;Consumidor Final;Regime Trib;Situacao;ID Vendedor;Nome Vendedor
-            const tipoPessoa = columns[1]?.toUpperCase() === 'PJ' ? 'PJ' : 'PF'
-            const tipoCadastro = columns[2]?.toLowerCase().includes('fornecedor') 
-              ? 'fornecedor' 
-              : columns[2]?.toLowerCase().includes('ambos') 
-                ? 'ambos' 
-                : 'cliente'
-            const documento = columns[3]?.replace(/\D/g, '') || ''
-            const nomeRazao = columns[4] || ''
-            const fantasia = columns[5] || ''
-            const endereco = columns[6] || ''
-            const numero = columns[7] || ''
-            const bairro = columns[8] || ''
-            const complemento = columns[9] || ''
-            const cep = columns[10]?.replace(/\D/g, '') || ''
-            const cidade = columns[11] || ''
-            const estado = columns[13] || ''
-            const telefone = columns[15]?.replace(/\D/g, '') || ''
-            const celular = columns[16]?.replace(/\D/g, '') || ''
-            const email = columns[18] || ''
-            const ieRg = columns[19] || ''
-            const im = columns[20] || ''
-            const observacoes = columns[22] || ''
-            const dataNascimento = columns[23] || ''
-            const regimeTributario = columns[26] || ''
-            const situacao = columns[27]?.toLowerCase().includes('ativo') !== false
+          const columns = parseCSVLine(line, delimiter)
+          
+          const tipoPessoa = columns[1]?.toUpperCase() === 'PJ' ? 'PJ' as const : 'PF' as const
+          const tipoCadastro = columns[2]?.toLowerCase().includes('fornecedor') 
+            ? 'fornecedor' as const
+            : columns[2]?.toLowerCase().includes('ambos') 
+              ? 'ambos' as const
+              : 'cliente' as const
+          const documento = columns[3]?.replace(/\D/g, '') || ''
+          const nomeRazao = columns[4] || ''
+          const fantasia = columns[5] || ''
+          const endereco = columns[6] || ''
+          const numero = columns[7] || ''
+          const bairro = columns[8] || ''
+          const complemento = columns[9] || ''
+          const cep = columns[10]?.replace(/\D/g, '') || ''
+          const cidade = columns[11] || ''
+          const estado = columns[13] || ''
+          const telefone = columns[15]?.replace(/\D/g, '') || ''
+          const celular = columns[16]?.replace(/\D/g, '') || ''
+          const email = columns[18] || ''
+          const ieRg = columns[19] || ''
+          const im = columns[20] || ''
+          const observacoes = columns[22] || ''
+          const dataNascimento = columns[23] || ''
+          const regimeTributario = columns[26] || ''
+          const situacao = columns[27]?.toLowerCase().includes('ativo') !== false
 
-            if (!nomeRazao && !documento) {
-              errors.push({ linha: i + 2, erro: 'Nome/Razão Social e documento não informados' })
-              continue
+          // Verificar duplicação
+          let isDuplicate = false
+          let duplicateReason = ''
+          
+          if (tipoPessoa === 'PJ' && documento) {
+            const existente = clientes.find(c => c.cnpj?.replace(/\D/g, '') === documento)
+            if (existente) {
+              isDuplicate = true
+              duplicateReason = `CNPJ já cadastrado: ${existente.razao_social || existente.nome}`
             }
+          } else if (tipoPessoa === 'PF' && documento) {
+            const existente = clientes.find(c => c.cpf?.replace(/\D/g, '') === documento)
+            if (existente) {
+              isDuplicate = true
+              duplicateReason = `CPF já cadastrado: ${existente.nome}`
+            }
+          }
 
-            const clienteData: any = {
+          previewItems.push({
+            linha: i + 2,
+            selected: !isDuplicate,
+            isDuplicate,
+            duplicateReason,
+            data: {
               tipo_pessoa: tipoPessoa,
               tipo_cadastro: tipoCadastro,
               nome: tipoPessoa === 'PF' ? nomeRazao : null,
@@ -329,32 +428,74 @@ export default function ClientesPage() {
               telefone, celular, email,
               regime_tributario: regimeTributario,
               observacoes,
-              ativo: situacao,
-              contribuinte_icms: !!ieRg,
-              limite_credito: 0,
-              anexos: []
+              ativo: situacao
             }
-
-            await createCliente(clienteData)
-            success++
-          } catch (err) {
-            const message = err instanceof Error ? err.message : 'Erro desconhecido'
-            errors.push({ linha: i + 2, erro: message })
-          }
+          })
         }
 
-        setImportResult({ success, errors })
-        await loadData()
+        setImportPreview(previewItems)
+        setImportStep('preview')
       } catch (err) {
         console.error('Erro ao processar CSV:', err)
-        setImportResult({ success: 0, errors: [{ linha: 0, erro: 'Erro ao processar arquivo CSV' }] })
-      } finally {
-        setImporting(false)
-        if (csvInputRef.current) csvInputRef.current.value = ''
+        alert('Erro ao ler o arquivo CSV')
       }
+      if (csvInputRef.current) csvInputRef.current.value = ''
     }
 
     reader.readAsText(file, 'UTF-8')
+  }
+
+  // Função para confirmar importação
+  const handleConfirmImport = async () => {
+    const selectedItems = importPreview.filter(item => item.selected)
+    if (selectedItems.length === 0) {
+      alert('Selecione pelo menos um item para importar')
+      return
+    }
+
+    setImporting(true)
+    let success = 0
+    const errors: { linha: number; erro: string }[] = []
+
+    for (const item of selectedItems) {
+      try {
+        await createCliente({
+          ...item.data,
+          contribuinte_icms: !!item.data.inscricao_estadual,
+          limite_credito: 0,
+          anexos: []
+        } as any)
+        success++
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Erro desconhecido'
+        errors.push({ linha: item.linha, erro: message })
+      }
+    }
+
+    setImportResult({ success, errors })
+    setImportStep('result')
+    setImporting(false)
+    await loadData()
+  }
+
+  // Toggle seleção de item no preview
+  const togglePreviewItem = (index: number) => {
+    setImportPreview(prev => prev.map((item, i) => 
+      i === index ? { ...item, selected: !item.selected } : item
+    ))
+  }
+
+  // Selecionar/desmarcar todos (import preview)
+  const toggleSelectAllImport = (selected: boolean) => {
+    setImportPreview(prev => prev.map(item => ({ ...item, selected: selected && !item.isDuplicate })))
+  }
+
+  // Resetar modal de importação
+  const resetImportModal = () => {
+    setIsImportModalOpen(false)
+    setImportResult(null)
+    setImportPreview([])
+    setImportStep('select')
   }
 
   const getTipoEnderecoLabel = (tipo: string) => {
@@ -401,16 +542,45 @@ export default function ClientesPage() {
           <div className="relative md:col-span-2"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" /><input type="text" placeholder="Buscar por nome, CPF/CNPJ, email..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input pl-12 w-full" /></div>
           <select value={filterTipo} onChange={(e) => setFilterTipo(e.target.value as any)} className="input"><option value="todos">Todos os tipos</option><option value="PF">Pessoa Física</option><option value="PJ">Pessoa Jurídica</option></select>
         </div>
+        {selectedIds.size > 0 && (
+          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center justify-between">
+            <span className="text-red-400 font-medium">{selectedIds.size} item(ns) selecionado(s)</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setSelectedIds(new Set())}>Limpar Seleção</Button>
+              <Button variant="danger" size="sm" onClick={handleDeleteSelected} disabled={deleting} leftIcon={<Trash2 className="w-4 h-4" />}>
+                {deleting ? 'Excluindo...' : 'Excluir Selecionados'}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="glass-card overflow-hidden">
         {filteredClientes.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="data-table">
-              <thead><tr><th>Nome</th><th>Tipo</th><th>Cadastro</th><th>Documento</th><th>Contato</th><th>Cidade/UF</th><th className="text-right">Ações</th></tr></thead>
+              <thead><tr>
+                <th className="w-10">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedIds.size === filteredClientes.length && filteredClientes.length > 0}
+                    onChange={toggleSelectAllClientes}
+                    className="w-4 h-4 rounded text-primary-500"
+                  />
+                </th>
+                <th>Nome</th><th>Tipo</th><th>Cadastro</th><th>Documento</th><th>Contato</th><th>Cidade/UF</th><th className="text-right">Ações</th>
+              </tr></thead>
               <tbody>
                 {filteredClientes.map((cliente) => (
-                  <tr key={cliente.id} className="group">
+                  <tr key={cliente.id} className={`group ${selectedIds.has(cliente.id) ? 'bg-primary-500/5' : ''}`}>
+                    <td>
+                      <input 
+                        type="checkbox" 
+                        checked={selectedIds.has(cliente.id)}
+                        onChange={() => toggleSelectItem(cliente.id)}
+                        className="w-4 h-4 rounded text-primary-500"
+                      />
+                    </td>
                     <td><div className="flex items-center gap-3"><div className={`w-10 h-10 rounded-lg flex items-center justify-center ${cliente.tipo_pessoa === 'PF' ? 'bg-blue-500/10' : 'bg-green-500/10'}`}>{cliente.tipo_pessoa === 'PF' ? <User className="w-5 h-5 text-blue-400" /> : <Building2 className="w-5 h-5 text-green-400" />}</div><div><span className="font-medium text-white">{cliente.tipo_pessoa === 'PF' ? cliente.nome : cliente.razao_social}</span>{cliente.tipo_pessoa === 'PJ' && cliente.nome_fantasia && <p className="text-xs text-dark-400">{cliente.nome_fantasia}</p>}{cliente.produtor_rural && <Badge variant="warning" size="sm" className="mt-1">Produtor Rural</Badge>}</div></div></td>
                     <td><Badge variant={cliente.tipo_pessoa === 'PF' ? 'primary' : 'success'}>{cliente.tipo_pessoa}</Badge></td>
                     <td><Badge variant={cliente.tipo_cadastro === 'cliente' ? 'info' : cliente.tipo_cadastro === 'fornecedor' ? 'warning' : 'secondary'}>{cliente.tipo_cadastro === 'ambos' ? 'Cli/Forn' : cliente.tipo_cadastro === 'cliente' ? 'Cliente' : 'Fornecedor'}</Badge></td>
@@ -521,74 +691,172 @@ export default function ClientesPage() {
       </Modal>
 
       {/* Modal de Importação CSV */}
-      <Modal isOpen={isImportModalOpen} onClose={() => { setIsImportModalOpen(false); setImportResult(null) }} title="Importar Clientes/Fornecedores" size="md">
+      <Modal isOpen={isImportModalOpen} onClose={resetImportModal} title="Importar Clientes/Fornecedores" size="xl">
         <div className="space-y-6">
-          <div className="p-4 bg-dark-700/50 rounded-lg">
-            <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
-            <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por ponto e vírgula (;) ou vírgula (,):</p>
-            <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
-              ID;Tipo Pessoa;Tipo Cadastro;CNPJ/CPF;Razao Social/Nome;Fantasia;Endereco;Numero;Bairro;Complemento;CEP;Cidade;Codigo IBGE;UF;Contato;Telefone;Celular;Fax;E-mail;IE/RG;IM;...
-            </div>
-          </div>
-
-          <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
-            <input
-              ref={csvInputRef}
-              type="file"
-              accept=".csv,.txt"
-              onChange={handleImportCSV}
-              className="hidden"
-            />
-            <FileUp className="w-12 h-12 text-dark-400 mb-4" />
-            <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
-            <Button
-              onClick={() => csvInputRef.current?.click()}
-              disabled={importing}
-              leftIcon={importing ? <LoadingSpinner size="sm" /> : <Upload className="w-4 h-4" />}
-            >
-              {importing ? 'Importando...' : 'Selecionar Arquivo'}
-            </Button>
-          </div>
-
-          {importResult && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg flex-1">
-                  <CheckCircle className="w-5 h-5 text-green-400" />
-                  <div>
-                    <p className="text-green-400 font-medium">{importResult.success}</p>
-                    <p className="text-dark-400 text-xs">Importados com sucesso</p>
-                  </div>
+          {/* Step 1: Seleção de arquivo */}
+          {importStep === 'select' && (
+            <>
+              <div className="p-4 bg-dark-700/50 rounded-lg">
+                <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
+                <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por ponto e vírgula (;) ou vírgula (,):</p>
+                <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
+                  ID;Tipo Pessoa;Tipo Cadastro;CNPJ/CPF;Razao Social/Nome;Fantasia;Endereco;Numero;Bairro;Complemento;CEP;Cidade;Codigo IBGE;UF;...
                 </div>
-                {importResult.errors.length > 0 && (
-                  <div className="flex items-center gap-2 p-3 bg-red-500/10 rounded-lg flex-1">
-                    <XCircle className="w-5 h-5 text-red-400" />
+              </div>
+
+              <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
+                <input ref={csvInputRef} type="file" accept=".csv,.txt" onChange={handleLoadCSVPreview} className="hidden" />
+                <FileUp className="w-12 h-12 text-dark-400 mb-4" />
+                <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
+                <Button onClick={() => csvInputRef.current?.click()} leftIcon={<Upload className="w-4 h-4" />}>Selecionar Arquivo</Button>
+              </div>
+
+              <div className="flex justify-end pt-4 border-t border-dark-700">
+                <Button variant="secondary" onClick={resetImportModal}>Cancelar</Button>
+              </div>
+            </>
+          )}
+
+          {/* Step 2: Preview e seleção */}
+          {importStep === 'preview' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-white font-medium">Revisão dos dados</h4>
+                  <p className="text-dark-400 text-sm">
+                    {importPreview.filter(i => i.selected).length} de {importPreview.length} itens selecionados
+                    {importPreview.filter(i => i.isDuplicate).length > 0 && (
+                      <span className="text-yellow-400 ml-2">
+                        ({importPreview.filter(i => i.isDuplicate).length} duplicados)
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => toggleSelectAllImport(true)}>Selecionar Todos</Button>
+                  <Button variant="secondary" size="sm" onClick={() => toggleSelectAllImport(false)}>Desmarcar Todos</Button>
+                </div>
+              </div>
+
+              <div className="max-h-96 overflow-y-auto border border-dark-700 rounded-lg">
+                <table className="data-table">
+                  <thead className="sticky top-0 bg-dark-800 z-10">
+                    <tr>
+                      <th className="w-10"></th>
+                      <th>Linha</th>
+                      <th>Tipo</th>
+                      <th>Nome / Razão Social</th>
+                      <th>Documento</th>
+                      <th>Cidade/UF</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.map((item, index) => (
+                      <tr key={index} className={`${item.isDuplicate ? 'bg-yellow-500/5' : ''} ${!item.selected ? 'opacity-50' : ''}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={item.selected}
+                            onChange={() => togglePreviewItem(index)}
+                            className="w-4 h-4 rounded text-primary-500"
+                          />
+                        </td>
+                        <td className="text-dark-400">{item.linha}</td>
+                        <td>
+                          <Badge variant={item.data.tipo_cadastro === 'cliente' ? 'info' : item.data.tipo_cadastro === 'fornecedor' ? 'warning' : 'secondary'}>
+                            {item.data.tipo_pessoa} - {item.data.tipo_cadastro === 'cliente' ? 'Cli' : item.data.tipo_cadastro === 'fornecedor' ? 'Forn' : 'Ambos'}
+                          </Badge>
+                        </td>
+                        <td className="text-white">
+                          {item.data.razao_social || item.data.nome || '-'}
+                          {item.data.nome_fantasia && <span className="text-dark-400 text-xs ml-2">({item.data.nome_fantasia})</span>}
+                        </td>
+                        <td className="text-dark-300 font-mono text-sm">
+                          {item.data.cnpj || item.data.cpf || '-'}
+                        </td>
+                        <td className="text-dark-400">
+                          {item.data.cidade ? `${item.data.cidade}/${item.data.estado}` : '-'}
+                        </td>
+                        <td>
+                          {item.isDuplicate ? (
+                            <div className="flex items-center gap-1">
+                              <AlertTriangle className="w-4 h-4 text-yellow-400" />
+                              <span className="text-yellow-400 text-xs" title={item.duplicateReason}>Duplicado</span>
+                            </div>
+                          ) : (
+                            <CheckCircle className="w-4 h-4 text-green-400" />
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {importPreview.some(i => i.isDuplicate) && (
+                <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <p className="text-yellow-400 text-sm flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    Itens duplicados foram automaticamente desmarcados. Você pode selecioná-los manualmente se desejar.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-between pt-4 border-t border-dark-700">
+                <Button variant="secondary" onClick={() => { setImportStep('select'); setImportPreview([]) }}>Voltar</Button>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={resetImportModal}>Cancelar</Button>
+                  <Button
+                    onClick={handleConfirmImport}
+                    disabled={importing || importPreview.filter(i => i.selected).length === 0}
+                    leftIcon={importing ? <LoadingSpinner size="sm" /> : <CheckCircle className="w-4 h-4" />}
+                  >
+                    {importing ? 'Importando...' : `Importar ${importPreview.filter(i => i.selected).length} itens`}
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Step 3: Resultado */}
+          {importStep === 'result' && importResult && (
+            <>
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 p-4 bg-green-500/10 rounded-lg flex-1">
+                    <CheckCircle className="w-6 h-6 text-green-400" />
                     <div>
-                      <p className="text-red-400 font-medium">{importResult.errors.length}</p>
-                      <p className="text-dark-400 text-xs">Erros encontrados</p>
+                      <p className="text-green-400 font-bold text-xl">{importResult.success}</p>
+                      <p className="text-dark-400 text-sm">Importados com sucesso</p>
                     </div>
+                  </div>
+                  {importResult.errors.length > 0 && (
+                    <div className="flex items-center gap-2 p-4 bg-red-500/10 rounded-lg flex-1">
+                      <XCircle className="w-6 h-6 text-red-400" />
+                      <div>
+                        <p className="text-red-400 font-bold text-xl">{importResult.errors.length}</p>
+                        <p className="text-dark-400 text-sm">Erros encontrados</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {importResult.errors.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
+                    <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
+                    {importResult.errors.map((err, i) => (
+                      <p key={i} className="text-red-400 text-xs mb-1">Linha {err.linha}: {err.erro}</p>
+                    ))}
                   </div>
                 )}
               </div>
 
-              {importResult.errors.length > 0 && (
-                <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
-                  <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
-                  {importResult.errors.map((err, i) => (
-                    <p key={i} className="text-red-400 text-xs mb-1">
-                      Linha {err.linha}: {err.erro}
-                    </p>
-                  ))}
-                </div>
-              )}
-            </div>
+              <div className="flex justify-end pt-4 border-t border-dark-700">
+                <Button onClick={resetImportModal}>Fechar</Button>
+              </div>
+            </>
           )}
-
-          <div className="flex justify-end pt-4 border-t border-dark-700">
-            <Button variant="secondary" onClick={() => { setIsImportModalOpen(false); setImportResult(null) }}>
-              Fechar
-            </Button>
-          </div>
         </div>
       </Modal>
     </div>

@@ -84,3 +84,164 @@ ON CONFLICT DO NOTHING;
 -- ALTER TABLE materiais ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE obras ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE obra_materiais ENABLE ROW LEVEL SECURITY;
+
+-- =====================================================
+-- ATUALIZAÇÃO DA TABELA CLIENTES (adicionar tipo_cadastro)
+-- Execute se a coluna não existir
+-- =====================================================
+
+-- Adicionar coluna tipo_cadastro na tabela clientes (se não existir)
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_cadastro TEXT DEFAULT 'cliente';
+
+-- Atualizar registros existentes que podem estar NULL
+UPDATE clientes SET tipo_cadastro = 'cliente' WHERE tipo_cadastro IS NULL;
+
+-- =====================================================
+-- TABELA DE CONFIGURAÇÃO FISCAL (NFe/NFCe/NFSe)
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS config_fiscal (
+  id SERIAL PRIMARY KEY,
+  
+  -- Dados do Emitente
+  cnpj TEXT NOT NULL,
+  inscricao_estadual TEXT,
+  inscricao_municipal TEXT,
+  razao_social TEXT NOT NULL,
+  nome_fantasia TEXT,
+  
+  -- Endereço
+  logradouro TEXT NOT NULL,
+  numero TEXT NOT NULL,
+  complemento TEXT,
+  bairro TEXT NOT NULL,
+  codigo_municipio TEXT NOT NULL,
+  municipio TEXT NOT NULL,
+  uf TEXT NOT NULL,
+  cep TEXT NOT NULL,
+  telefone TEXT,
+  
+  -- Regime tributário: 1=Simples Nacional, 2=Simples Excesso, 3=Regime Normal
+  regime_tributario INT CHECK (regime_tributario IN (1, 2, 3)) DEFAULT 1,
+  
+  -- Focus NFe API
+  focusnfe_token TEXT,
+  focusnfe_ambiente TEXT CHECK (focusnfe_ambiente IN ('homologacao', 'producao')) DEFAULT 'homologacao',
+  
+  -- Certificado Digital (base64) - opcional se já enviou pelo painel Focus NFe
+  certificado_base64 TEXT,
+  certificado_senha TEXT,
+  certificado_validade DATE,
+  
+  -- NFCe (se aplicável)
+  csc_nfce TEXT,
+  id_token_nfce TEXT,
+  
+  -- Série das notas
+  serie_nfe INT DEFAULT 1,
+  serie_nfce INT DEFAULT 1,
+  serie_nfse INT DEFAULT 1,
+  
+  -- Próximo número (controle local, Focus NFe gerencia automaticamente)
+  proximo_numero_nfe INT DEFAULT 1,
+  proximo_numero_nfce INT DEFAULT 1,
+  proximo_numero_nfse INT DEFAULT 1,
+  
+  -- Configurações padrão
+  natureza_operacao_padrao TEXT DEFAULT 'Venda',
+  cfop_padrao TEXT DEFAULT '5102',
+  
+  -- Informações adicionais padrão
+  informacoes_complementares TEXT,
+  
+  -- Status
+  ativo BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- =====================================================
+-- TABELA DE NOTAS FISCAIS EMITIDAS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS notas_fiscais (
+  id SERIAL PRIMARY KEY,
+  
+  -- Referência única (usada na API Focus NFe)
+  referencia TEXT UNIQUE NOT NULL,
+  
+  -- Vínculo com venda
+  venda_id INT REFERENCES vendas(id) ON DELETE SET NULL,
+  
+  -- Tipo de documento
+  tipo TEXT CHECK (tipo IN ('nfe', 'nfce', 'nfse')) NOT NULL DEFAULT 'nfe',
+  
+  -- Dados da nota
+  numero TEXT,
+  serie TEXT,
+  chave_acesso TEXT,
+  
+  -- Status
+  status TEXT CHECK (status IN (
+    'pendente',
+    'processando',
+    'autorizada',
+    'cancelada',
+    'rejeitada',
+    'denegada'
+  )) DEFAULT 'pendente',
+  
+  status_sefaz TEXT,
+  mensagem_sefaz TEXT,
+  
+  -- Dados do destinatário (snapshot)
+  destinatario_nome TEXT,
+  destinatario_documento TEXT,
+  destinatario_email TEXT,
+  
+  -- Valores
+  valor_total DECIMAL(15,2),
+  valor_produtos DECIMAL(15,2),
+  valor_desconto DECIMAL(15,2) DEFAULT 0,
+  valor_frete DECIMAL(15,2) DEFAULT 0,
+  
+  -- URLs dos arquivos
+  url_xml TEXT,
+  url_danfe TEXT,
+  url_xml_cancelamento TEXT,
+  
+  -- Carta de correção (se houver)
+  carta_correcao_numero INT,
+  carta_correcao_texto TEXT,
+  url_carta_correcao_xml TEXT,
+  url_carta_correcao_pdf TEXT,
+  
+  -- Cancelamento
+  cancelada_em TIMESTAMPTZ,
+  cancelamento_justificativa TEXT,
+  cancelamento_protocolo TEXT,
+  
+  -- Dados JSON completos (backup)
+  dados_envio JSONB,
+  dados_retorno JSONB,
+  
+  -- Timestamps
+  emitida_em TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Índices para melhor performance
+CREATE INDEX IF NOT EXISTS idx_notas_fiscais_venda ON notas_fiscais(venda_id);
+CREATE INDEX IF NOT EXISTS idx_notas_fiscais_status ON notas_fiscais(status);
+CREATE INDEX IF NOT EXISTS idx_notas_fiscais_chave ON notas_fiscais(chave_acesso);
+CREATE INDEX IF NOT EXISTS idx_notas_fiscais_referencia ON notas_fiscais(referencia);
+
+-- =====================================================
+-- ATUALIZAR TABELA DE VENDAS (adicionar campos NFe)
+-- =====================================================
+
+-- Adiciona coluna para referência da nota fiscal
+ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_id INT REFERENCES notas_fiscais(id) ON DELETE SET NULL;
+ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_status TEXT;
+ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_chave TEXT;

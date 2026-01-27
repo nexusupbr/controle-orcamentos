@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { 
   Plus, Search, ShoppingCart, Package, User, Trash2, 
   FileText, Check, X, Edit2, Eye, Printer, Download,
-  Calculator, Receipt, TrendingUp
+  Calculator, Receipt, TrendingUp, RefreshCw, AlertCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { 
@@ -17,6 +17,13 @@ import {
   createContaReceber, Cliente, Produto, Venda
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
+import { 
+  emitirNFe, consultarNFe, aguardarAutorizacaoNFe, 
+  gerarReferenciaNFe, getUrlDanfe, getUrlXml,
+  NFeDados, NFeItem, NFeFormaPagamento,
+  getConfig, verificarConfiguracao
+} from '@/lib/focusnfe'
 
 interface ItemVenda {
   produto_id: number
@@ -328,51 +335,199 @@ export default function VendasPage() {
     }
   }
 
-  // Gerar Nota Fiscal
+  // Gerar Nota Fiscal via Focus NFe
   const handleGerarNota = async (venda: Venda) => {
     if (venda.nota_fiscal_emitida) {
       alert('Esta venda já possui nota fiscal emitida!')
       return
     }
 
-    if (!confirm('Deseja gerar a Nota Fiscal para esta venda?')) return
+    // Verificar configuração da API
+    const configCheck = verificarConfiguracao()
+    if (!configCheck.ok) {
+      alert(`Erro de configuração: ${configCheck.mensagem}. Configure em Configurações > Fiscal.`)
+      return
+    }
+
+    if (!confirm('Deseja gerar a Nota Fiscal para esta venda?\n\nAmbiente: ' + getConfig().ambiente.toUpperCase())) return
 
     setGeneratingNF(true)
     try {
-      // Gerar número da NF (sequencial baseado na data)
-      const dataAtual = new Date()
-      const anoMes = `${dataAtual.getFullYear()}${String(dataAtual.getMonth() + 1).padStart(2, '0')}`
-      const sequencial = Math.floor(Math.random() * 999999).toString().padStart(6, '0')
-      const numeroNF = `${anoMes}${sequencial}`
-      
-      // Gerar chave de acesso simulada (44 dígitos)
-      const chaveNF = `35${anoMes}${Math.random().toString().slice(2, 16)}55001${sequencial}1${Math.floor(Math.random() * 10)}`
-      
-      // Calcular impostos aproximados (simulação)
-      const valorImpostos = (venda.valor_total || 0) * 0.0925 // ICMS ST aproximado
-      
-      await updateVenda(venda.id, {
-        nota_fiscal_emitida: true,
-        numero_nf: numeroNF,
-        chave_nf: chaveNF.padEnd(44, '0').slice(0, 44),
-        valor_impostos: valorImpostos
-      })
+      // Buscar configurações fiscais do banco
+      const { data: configFiscal, error: configError } = await supabase
+        .from('config_fiscal')
+        .select('*')
+        .eq('ativo', true)
+        .single()
 
-      await loadData()
-      
-      // Atualizar selectedVenda para mostrar os dados da NF
-      setSelectedVenda(prev => prev ? {
-        ...prev,
-        nota_fiscal_emitida: true,
-        numero_nf: numeroNF,
-        chave_nf: chaveNF.padEnd(44, '0').slice(0, 44),
-        valor_impostos: valorImpostos
-      } : null)
+      if (configError || !configFiscal) {
+        throw new Error('Configuração fiscal não encontrada. Acesse Configurações > Fiscal para configurar.')
+      }
 
-      alert(`Nota Fiscal ${numeroNF} gerada com sucesso!`)
-    } catch (error) {
+      // Dados do cliente
+      const cliente = venda.cliente
+      const itensVenda = venda.itens || []
+
+      if (itensVenda.length === 0) {
+        throw new Error('Venda sem itens não pode gerar nota fiscal')
+      }
+
+      // Gerar referência única
+      const referencia = gerarReferenciaNFe()
+      
+      // Montar itens da NFe
+      const itensNFe: NFeItem[] = itensVenda.map((item: any, index: number) => ({
+        numero_item: index + 1,
+        codigo_produto: item.produto_id?.toString() || (index + 1).toString(),
+        descricao: getConfig().ambiente === 'homologacao' 
+          ? 'NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'
+          : item.descricao || 'Produto',
+        ncm: item.produto?.ncm || '00000000', // NCM do produto ou genérico
+        cfop: configFiscal.cfop_padrao || '5102',
+        unidade_comercial: item.produto?.unidade || 'UN',
+        quantidade_comercial: item.quantidade,
+        valor_unitario_comercial: item.valor_unitario,
+        valor_bruto: item.valor_total,
+        unidade_tributavel: item.produto?.unidade || 'UN',
+        quantidade_tributavel: item.quantidade,
+        valor_unitario_tributavel: item.valor_unitario,
+        icms_origem: 0, // Nacional
+        icms_situacao_tributaria: configFiscal.regime_tributario === 1 ? '102' : '00', // Simples Nacional ou Tributada
+        pis_situacao_tributaria: '07', // Operação Isenta
+        cofins_situacao_tributaria: '07' // Operação Isenta
+      }))
+
+      // Montar forma de pagamento
+      const formasPgto: NFeFormaPagamento[] = [{
+        forma_pagamento: '01', // Dinheiro por padrão
+        valor_pagamento: venda.valor_total || 0
+      }]
+
+      // Montar dados da NFe
+      const dadosNFe: NFeDados = {
+        // Dados gerais
+        natureza_operacao: configFiscal.natureza_operacao_padrao || 'Venda',
+        data_emissao: new Date().toISOString(),
+        tipo_documento: 1, // Saída
+        local_destino: 1, // Operação interna
+        finalidade_emissao: 1, // Normal
+        consumidor_final: 1, // Consumidor final
+        presenca_comprador: 1, // Presencial
+        
+        // Emitente
+        cnpj_emitente: configFiscal.cnpj,
+        inscricao_estadual_emitente: configFiscal.inscricao_estadual || '',
+        nome_emitente: configFiscal.razao_social,
+        nome_fantasia_emitente: configFiscal.nome_fantasia || configFiscal.razao_social,
+        logradouro_emitente: configFiscal.logradouro,
+        numero_emitente: configFiscal.numero,
+        complemento_emitente: configFiscal.complemento || '',
+        bairro_emitente: configFiscal.bairro,
+        municipio_emitente: configFiscal.municipio,
+        uf_emitente: configFiscal.uf,
+        cep_emitente: configFiscal.cep,
+        telefone_emitente: configFiscal.telefone || '',
+        regime_tributario_emitente: configFiscal.regime_tributario as 1 | 2 | 3,
+        
+        // Destinatário
+        nome_destinatario: getConfig().ambiente === 'homologacao'
+          ? 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'
+          : (cliente?.nome || cliente?.razao_social || 'Consumidor Final'),
+        cpf_destinatario: cliente?.cpf?.replace(/\D/g, '') || undefined,
+        cnpj_destinatario: cliente?.cnpj?.replace(/\D/g, '') || undefined,
+        logradouro_destinatario: cliente?.endereco || '',
+        numero_destinatario: cliente?.numero || 'S/N',
+        bairro_destinatario: cliente?.bairro || '',
+        municipio_destinatario: cliente?.cidade || configFiscal.municipio,
+        uf_destinatario: cliente?.estado || configFiscal.uf,
+        cep_destinatario: cliente?.cep?.replace(/\D/g, '') || '',
+        indicador_inscricao_estadual_destinatario: 9, // Não contribuinte
+        
+        // Totais
+        valor_total: venda.valor_total || 0,
+        valor_produtos: venda.valor_produtos || venda.valor_total || 0,
+        valor_desconto: venda.valor_desconto || 0,
+        valor_frete: venda.valor_frete || 0,
+        
+        // Frete
+        modalidade_frete: 9, // Sem frete
+        
+        // Itens
+        items: itensNFe,
+        
+        // Pagamento
+        formas_pagamento: formasPgto,
+        
+        // Informações adicionais
+        informacoes_adicionais_contribuinte: configFiscal.informacoes_complementares || ''
+      }
+
+      console.log('Enviando NFe para Focus NFe:', { referencia, ambiente: getConfig().ambiente })
+
+      // Emitir NFe
+      const resultadoEmissao = await emitirNFe(referencia, dadosNFe)
+      console.log('Resultado emissão:', resultadoEmissao)
+
+      // Se está processando, aguardar autorização
+      let resultadoFinal = resultadoEmissao
+      if (resultadoEmissao.status === 'processando_autorizacao') {
+        console.log('Aguardando autorização...')
+        resultadoFinal = await aguardarAutorizacaoNFe(referencia)
+        console.log('Resultado final:', resultadoFinal)
+      }
+
+      // Verificar resultado
+      if (resultadoFinal.status === 'autorizado') {
+        // Sucesso! Atualizar venda com dados da NF
+        await updateVenda(venda.id, {
+          nota_fiscal_emitida: true,
+          numero_nf: resultadoFinal.numero || '',
+          chave_nf: resultadoFinal.chave_nfe || ''
+        })
+
+        // Salvar na tabela de notas fiscais
+        await supabase.from('notas_fiscais').insert([{
+          referencia: referencia,
+          venda_id: venda.id,
+          tipo: 'nfe',
+          numero: resultadoFinal.numero,
+          serie: resultadoFinal.serie,
+          chave_acesso: resultadoFinal.chave_nfe,
+          status: 'autorizada',
+          status_sefaz: resultadoFinal.status_sefaz,
+          mensagem_sefaz: resultadoFinal.mensagem_sefaz,
+          destinatario_nome: cliente?.nome || cliente?.razao_social || 'Consumidor Final',
+          destinatario_documento: cliente?.cpf || cliente?.cnpj || '',
+          valor_total: venda.valor_total,
+          valor_produtos: venda.valor_produtos,
+          url_xml: resultadoFinal.caminho_xml_nota_fiscal,
+          url_danfe: resultadoFinal.caminho_danfe,
+          dados_envio: dadosNFe,
+          dados_retorno: resultadoFinal,
+          emitida_em: new Date().toISOString()
+        }])
+
+        await loadData()
+        
+        // Atualizar selectedVenda
+        setSelectedVenda(prev => prev ? {
+          ...prev,
+          nota_fiscal_emitida: true,
+          numero_nf: resultadoFinal.numero || '',
+          chave_nf: resultadoFinal.chave_nfe || ''
+        } : null)
+
+        alert(`✅ Nota Fiscal autorizada com sucesso!\n\nNúmero: ${resultadoFinal.numero}\nChave: ${resultadoFinal.chave_nfe}`)
+      } else if (resultadoFinal.status === 'erro_autorizacao') {
+        const erros = resultadoFinal.erros?.map(e => `${e.codigo}: ${e.mensagem}`).join('\n') || resultadoFinal.mensagem_sefaz
+        throw new Error(`Erro na autorização:\n${erros}`)
+      } else {
+        throw new Error(`Status inesperado: ${resultadoFinal.status}\n${resultadoFinal.mensagem_sefaz || ''}`)
+      }
+
+    } catch (error: any) {
       console.error('Erro ao gerar nota fiscal:', error)
-      alert('Erro ao gerar nota fiscal')
+      alert(`❌ Erro ao gerar nota fiscal:\n\n${error.message || error}`)
     } finally {
       setGeneratingNF(false)
     }

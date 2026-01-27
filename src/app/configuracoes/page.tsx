@@ -1,7 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { Settings, Database, Palette, Bell, Shield, Save, Check, ChevronRight, ExternalLink, Moon, Sun, Zap } from 'lucide-react'
+import Link from 'next/link'
+import { Settings, Database, Palette, Bell, Shield, Save, Check, ChevronRight, ExternalLink, Moon, Sun, Zap, FileText, Receipt } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, Select, Checkbox } from '@/components/ui/Form'
 
@@ -256,6 +257,37 @@ export default function ConfiguracoesPage() {
           </div>
         </div>
       </div>
+
+      {/* Configuração Fiscal - Link */}
+      <Link href="/configuracoes/fiscal" className="block">
+        <div className="glass-card overflow-hidden hover:border-blue-500/50 transition-colors cursor-pointer group">
+          <div className="p-4 lg:p-6 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center group-hover:bg-blue-500/20 transition-colors">
+              <Receipt className="w-6 h-6 text-blue-400" />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-lg font-semibold text-white group-hover:text-blue-400 transition-colors">
+                Configuração Fiscal (NFe/NFCe)
+              </h2>
+              <p className="text-sm text-dark-400">
+                Configure os dados do emitente e integração com Focus NFe para emissão de notas fiscais
+              </p>
+            </div>
+            <ChevronRight className="w-5 h-5 text-dark-500 group-hover:text-blue-400 transition-colors" />
+          </div>
+          <div className="px-6 pb-4 flex gap-2">
+            <span className="px-2 py-1 text-xs rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20">
+              NFe
+            </span>
+            <span className="px-2 py-1 text-xs rounded-md bg-green-500/10 text-green-400 border border-green-500/20">
+              NFCe
+            </span>
+            <span className="px-2 py-1 text-xs rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20">
+              Focus NFe API
+            </span>
+          </div>
+        </div>
+      </Link>
 
       {/* About */}
       <div className="glass-card p-6">

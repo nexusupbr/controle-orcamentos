@@ -25,6 +25,36 @@ interface ImportResult {
   errors: { linha: number; erro: string }[]
 }
 
+interface ImportPreviewItem {
+  linha: number
+  selected: boolean
+  isDuplicate: boolean
+  duplicateReason?: string
+  data: {
+    codigo: string
+    codigo_barras: string
+    gtin_ean: string
+    nome: string
+    descricao: string
+    unidade: string
+    ncm: string
+    origem: string
+    classificacao_fiscal: string
+    valor_custo: number
+    valor_venda: number
+    custo_medio: number
+    margem_lucro: number
+    quantidade_estoque: number
+    estoque_minimo: number
+    estoque_maximo: number
+    marca: string
+    peso_kg: number
+    tamanho: string
+    localizacao: string
+    ativo: boolean
+  }
+}
+
 // Classificações fiscais padrão
 const classificacoesPadrao = [
   { codigo: '00', nome: 'Mercadoria para Revenda' },
@@ -52,6 +82,10 @@ export default function EstoquePage() {
   const [filterCategoria, setFilterCategoria] = useState<string>('')
   const [filterClassificacao, setFilterClassificacao] = useState<string>('')
   
+  // Estados para seleção em massa
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+  
   // Modais
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false)
@@ -62,6 +96,8 @@ export default function EstoquePage() {
   // Estados para importação CSV
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [importPreview, setImportPreview] = useState<ImportPreviewItem[]>([])
+  const [importStep, setImportStep] = useState<'select' | 'preview' | 'result'>('select')
   const csvInputRef = useRef<HTMLInputElement>(null)
   
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -274,6 +310,57 @@ export default function EstoquePage() {
     }
   }
 
+  // Funções para seleção em massa
+  const toggleSelectItem = (id: number) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) {
+        newSet.delete(id)
+      } else {
+        newSet.add(id)
+      }
+      return newSet
+    })
+  }
+
+  const toggleSelectAllProdutos = () => {
+    if (selectedIds.size === filteredProdutos.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredProdutos.map(p => p.id)))
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return
+    
+    const count = selectedIds.size
+    if (!confirm(`Tem certeza que deseja excluir ${count} produto(s)?\n\nEsta ação não pode ser desfeita.`)) return
+    
+    setDeleting(true)
+    let successCount = 0
+    let errorCount = 0
+    
+    const idsArray = Array.from(selectedIds)
+    for (const id of idsArray) {
+      try {
+        await deleteProduto(id)
+        successCount++
+      } catch (err) {
+        console.error(`Erro ao excluir produto ${id}:`, err)
+        errorCount++
+      }
+    }
+    
+    setSelectedIds(new Set())
+    await loadData()
+    setDeleting(false)
+    
+    if (errorCount > 0) {
+      alert(`${successCount} excluído(s) com sucesso.\n${errorCount} erro(s) ao excluir.`)
+    }
+  }
+
   // Função para importar CSV de produtos
   const parseCSVLine = (line: string, delimiter: string = ','): string[] => {
     const result: string[] = []
@@ -302,12 +389,10 @@ export default function EstoquePage() {
     return parseFloat(cleaned) || 0
   }
 
-  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Função para carregar CSV e mostrar preview
+  const handleLoadCSVPreview = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-
-    setImporting(true)
-    setImportResult(null)
 
     const reader = new FileReader()
     reader.onload = async (event) => {
@@ -315,64 +400,63 @@ export default function EstoquePage() {
         const text = event.target?.result as string
         const lines = text.split('\n').filter(line => line.trim())
         
-        // Detectar delimitador (vírgula ou ponto e vírgula)
         const delimiter = lines[0].includes(';') ? ';' : ','
-        
-        // Pular cabeçalho
         const dataLines = lines.slice(1)
         
-        let success = 0
-        const errors: { linha: number; erro: string }[] = []
+        const previewItems: ImportPreviewItem[] = []
 
         for (let i = 0; i < dataLines.length; i++) {
           const line = dataLines[i]
           if (!line.trim()) continue
           
-          try {
-            const columns = parseCSVLine(line, delimiter)
-            
-            // Mapear colunas do CSV para campos do sistema
-            // Formato: Codigo;Tipo;Nome;Fornecedor;ID Fornecedor;Marca;Est Min;Est Max;Est Atual;Unidade;Variado;Valor Venda;Valor Custo;Peso;Peso Liq;ICMS;IPI;PIS;COFINS;Un Trib;Cod Benef;CEST;NCM;Origem;Ordem;GTIN;Tipo Class;Obs;ID Cat;ID Subcat;Situacao;Tamanho;Localizacao
-            const codigo = columns[0] || ''
-            const tipo = columns[1]?.toLowerCase() || 'produto'
-            const nome = columns[2] || ''
-            const fornecedorNome = columns[3] || ''
-            const fornecedorId = columns[4] ? parseInt(columns[4]) : null
-            const marca = columns[5] || ''
-            const estoqueMinimo = parseNumber(columns[6])
-            const estoqueMaximo = parseNumber(columns[7])
-            const estoqueAtual = parseNumber(columns[8])
-            const unidade = columns[9] || 'UN'
-            const valorVenda = parseNumber(columns[11])
-            const valorCusto = parseNumber(columns[12])
-            const peso = parseNumber(columns[13])
-            const ncm = columns[22] || ''
-            const origem = columns[23] || '0'
-            const codigoBarras = columns[25] || ''
-            const classificacaoFiscal = columns[26] || '07'
-            const observacoes = columns[27] || ''
-            const situacao = columns[30]?.toLowerCase().includes('ativo') !== false
-            const tamanho = columns[31] || ''
-            const localizacao = columns[32] || ''
+          const columns = parseCSVLine(line, delimiter)
+          
+          const codigo = columns[0] || ''
+          const nome = columns[2] || ''
+          const marca = columns[5] || ''
+          const estoqueMinimo = parseNumber(columns[6])
+          const estoqueMaximo = parseNumber(columns[7])
+          const estoqueAtual = parseNumber(columns[8])
+          const unidade = columns[9] || 'UN'
+          const valorVenda = parseNumber(columns[11])
+          const valorCusto = parseNumber(columns[12])
+          const peso = parseNumber(columns[13])
+          const ncm = columns[22] || ''
+          const origem = columns[23] || '0'
+          const codigoBarras = columns[25] || ''
+          const classificacaoFiscal = columns[26] || '07'
+          const observacoes = columns[27] || ''
+          const situacao = columns[30]?.toLowerCase().includes('ativo') !== false
+          const tamanho = columns[31] || ''
+          const localizacao = columns[32] || ''
 
-            if (!nome) {
-              errors.push({ linha: i + 2, erro: 'Nome do produto não informado' })
-              continue
+          // Verificar duplicação
+          let isDuplicate = false
+          let duplicateReason = ''
+          
+          const produtoExistente = produtos.find(p => 
+            (codigo && p.codigo === codigo) || 
+            p.nome.toLowerCase() === nome.toLowerCase() ||
+            (codigoBarras && p.codigo_barras === codigoBarras)
+          )
+          
+          if (produtoExistente) {
+            isDuplicate = true
+            if (codigo && produtoExistente.codigo === codigo) {
+              duplicateReason = `Código "${codigo}" já cadastrado: ${produtoExistente.nome}`
+            } else if (codigoBarras && produtoExistente.codigo_barras === codigoBarras) {
+              duplicateReason = `Código de barras já cadastrado: ${produtoExistente.nome}`
+            } else {
+              duplicateReason = `Nome similar já cadastrado: ${produtoExistente.nome}`
             }
+          }
 
-            // Verificar se já existe produto similar
-            const produtoExistente = produtos.find(p => 
-              p.codigo === codigo || 
-              p.nome.toLowerCase() === nome.toLowerCase() ||
-              (codigoBarras && p.codigo_barras === codigoBarras)
-            )
-
-            if (produtoExistente) {
-              errors.push({ linha: i + 2, erro: `Produto similar já existe: ${produtoExistente.nome}` })
-              continue
-            }
-
-            const produtoData: any = {
+          previewItems.push({
+            linha: i + 2,
+            selected: !isDuplicate && !!nome,
+            isDuplicate,
+            duplicateReason,
+            data: {
               codigo,
               codigo_barras: codigoBarras,
               gtin_ean: codigoBarras,
@@ -395,27 +479,74 @@ export default function EstoquePage() {
               localizacao,
               ativo: situacao
             }
-
-            await createProduto(produtoData)
-            success++
-          } catch (err) {
-            const message = err instanceof Error ? err.message : 'Erro desconhecido'
-            errors.push({ linha: i + 2, erro: message })
-          }
+          })
         }
 
-        setImportResult({ success, errors })
-        await loadData()
+        setImportPreview(previewItems)
+        setImportStep('preview')
       } catch (err) {
         console.error('Erro ao processar CSV:', err)
-        setImportResult({ success: 0, errors: [{ linha: 0, erro: 'Erro ao processar arquivo CSV' }] })
-      } finally {
-        setImporting(false)
-        if (csvInputRef.current) csvInputRef.current.value = ''
+        alert('Erro ao ler o arquivo CSV')
       }
+      if (csvInputRef.current) csvInputRef.current.value = ''
     }
 
     reader.readAsText(file, 'UTF-8')
+  }
+
+  // Função para confirmar importação
+  const handleConfirmImport = async () => {
+    const selectedItems = importPreview.filter(item => item.selected)
+    if (selectedItems.length === 0) {
+      alert('Selecione pelo menos um item para importar')
+      return
+    }
+
+    setImporting(true)
+    let success = 0
+    const errors: { linha: number; erro: string }[] = []
+
+    for (const item of selectedItems) {
+      try {
+        if (!item.data.nome) {
+          errors.push({ linha: item.linha, erro: 'Nome do produto não informado' })
+          continue
+        }
+        await createProduto(item.data as any)
+        success++
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Erro desconhecido'
+        errors.push({ linha: item.linha, erro: message })
+      }
+    }
+
+    setImportResult({ success, errors })
+    setImportStep('result')
+    setImporting(false)
+    await loadData()
+  }
+
+  // Toggle seleção de item no preview
+  const togglePreviewItem = (index: number) => {
+    setImportPreview(prev => prev.map((item, i) => 
+      i === index ? { ...item, selected: !item.selected } : item
+    ))
+  }
+
+  // Selecionar/desmarcar todos
+  const toggleSelectAll = (selected: boolean) => {
+    setImportPreview(prev => prev.map(item => ({ 
+      ...item, 
+      selected: selected && !item.isDuplicate && !!item.data.nome 
+    })))
+  }
+
+  // Resetar modal de importação
+  const resetImportModal = () => {
+    setIsImportModalOpen(false)
+    setImportResult(null)
+    setImportPreview([])
+    setImportStep('select')
   }
 
   // Ver histórico de movimentações
@@ -628,6 +759,18 @@ export default function EstoquePage() {
             ))}
           </select>
         </div>
+        
+        {selectedIds.size > 0 && (
+          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center justify-between">
+            <span className="text-red-400 font-medium">{selectedIds.size} produto(s) selecionado(s)</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setSelectedIds(new Set())}>Limpar Seleção</Button>
+              <Button variant="danger" size="sm" onClick={handleDeleteSelected} disabled={deleting} leftIcon={<Trash2 className="w-4 h-4" />}>
+                {deleting ? 'Excluindo...' : 'Excluir Selecionados'}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Categorias (cards editáveis) */}
@@ -672,6 +815,14 @@ export default function EstoquePage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th className="w-10">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedIds.size === filteredProdutos.length && filteredProdutos.length > 0}
+                      onChange={toggleSelectAllProdutos}
+                      className="w-4 h-4 rounded text-primary-500"
+                    />
+                  </th>
                   <th>Código</th>
                   <th>Produto</th>
                   <th>Categoria</th>
@@ -685,7 +836,15 @@ export default function EstoquePage() {
               </thead>
               <tbody>
                 {filteredProdutos.map((produto) => (
-                  <tr key={produto.id} className="group">
+                  <tr key={produto.id} className={`group ${selectedIds.has(produto.id) ? 'bg-primary-500/5' : ''}`}>
+                    <td>
+                      <input 
+                        type="checkbox" 
+                        checked={selectedIds.has(produto.id)}
+                        onChange={() => toggleSelectItem(produto.id)}
+                        className="w-4 h-4 rounded text-primary-500"
+                      />
+                    </td>
                     <td className="text-dark-400">{produto.codigo || '-'}</td>
                     <td>
                       <div className="flex items-center gap-3">
@@ -1242,77 +1401,170 @@ export default function EstoquePage() {
       </Modal>
 
       {/* Modal de Importação CSV de Produtos */}
-      <Modal isOpen={isImportModalOpen} onClose={() => { setIsImportModalOpen(false); setImportResult(null) }} title="Importar Produtos" size="md">
+      <Modal isOpen={isImportModalOpen} onClose={resetImportModal} title="Importar Produtos" size="xl">
         <div className="space-y-6">
-          <div className="p-4 bg-dark-700/50 rounded-lg">
-            <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
-            <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por vírgula (,) ou ponto e vírgula (;):</p>
-            <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
-              Código,Tipo,Nome,Fornecedor,ID Fornec,Marca,Est.Min,Est.Max,Est.Atual,Unidade,Variado,Valor Venda,Valor Custo,...NCM,Origem,...GTIN,Tipo Class,...
-            </div>
-          </div>
-
-          <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
-            <input
-              ref={csvInputRef}
-              type="file"
-              accept=".csv,.txt"
-              onChange={handleImportCSV}
-              className="hidden"
-            />
-            <FileUp className="w-12 h-12 text-dark-400 mb-4" />
-            <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
-            <Button
-              onClick={() => csvInputRef.current?.click()}
-              disabled={importing}
-              leftIcon={importing ? <LoadingSpinner size="sm" /> : <Upload className="w-4 h-4" />}
-            >
-              {importing ? 'Importando...' : 'Selecionar Arquivo'}
-            </Button>
-          </div>
-
-          {importResult && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg flex-1">
-                  <CheckCircle className="w-5 h-5 text-green-400" />
-                  <div>
-                    <p className="text-green-400 font-medium">{importResult.success}</p>
-                    <p className="text-dark-400 text-xs">Importados com sucesso</p>
-                  </div>
+          {/* Step 1: Seleção de arquivo */}
+          {importStep === 'select' && (
+            <>
+              <div className="p-4 bg-dark-700/50 rounded-lg">
+                <h4 className="text-white font-medium mb-2">Formato do arquivo CSV</h4>
+                <p className="text-dark-400 text-sm mb-3">O arquivo deve conter as colunas separadas por vírgula (,) ou ponto e vírgula (;):</p>
+                <div className="text-xs text-dark-500 font-mono bg-dark-800 p-3 rounded overflow-x-auto">
+                  Código;Tipo;Nome;Fornecedor;ID Fornec;Marca;Est.Min;Est.Max;Est.Atual;Unidade;Variado;Valor Venda;Valor Custo;...
                 </div>
-                {importResult.errors.length > 0 && (
-                  <div className="flex items-center gap-2 p-3 bg-red-500/10 rounded-lg flex-1">
-                    <XCircle className="w-5 h-5 text-red-400" />
+              </div>
+
+              <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-dark-600 rounded-lg hover:border-primary-500 transition-colors">
+                <input ref={csvInputRef} type="file" accept=".csv,.txt" onChange={handleLoadCSVPreview} className="hidden" />
+                <FileUp className="w-12 h-12 text-dark-400 mb-4" />
+                <p className="text-dark-300 mb-4">Selecione o arquivo CSV para importar</p>
+                <Button onClick={() => csvInputRef.current?.click()} leftIcon={<Upload className="w-4 h-4" />}>Selecionar Arquivo</Button>
+              </div>
+
+              <div className="flex justify-end pt-4 border-t border-dark-700">
+                <Button variant="secondary" onClick={resetImportModal}>Cancelar</Button>
+              </div>
+            </>
+          )}
+
+          {/* Step 2: Preview e seleção */}
+          {importStep === 'preview' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-white font-medium">Revisão dos dados</h4>
+                  <p className="text-dark-400 text-sm">
+                    {importPreview.filter(i => i.selected).length} de {importPreview.length} itens selecionados
+                    {importPreview.filter(i => i.isDuplicate).length > 0 && (
+                      <span className="text-yellow-400 ml-2">
+                        ({importPreview.filter(i => i.isDuplicate).length} duplicados)
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => toggleSelectAll(true)}>Selecionar Todos</Button>
+                  <Button variant="secondary" size="sm" onClick={() => toggleSelectAll(false)}>Desmarcar Todos</Button>
+                </div>
+              </div>
+
+              <div className="max-h-96 overflow-y-auto border border-dark-700 rounded-lg">
+                <table className="data-table">
+                  <thead className="sticky top-0 bg-dark-800 z-10">
+                    <tr>
+                      <th className="w-10"></th>
+                      <th>Linha</th>
+                      <th>Código</th>
+                      <th>Nome</th>
+                      <th>Marca</th>
+                      <th className="text-right">Custo</th>
+                      <th className="text-right">Venda</th>
+                      <th className="text-right">Estoque</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.map((item, index) => (
+                      <tr key={index} className={`${item.isDuplicate ? 'bg-yellow-500/5' : ''} ${!item.selected ? 'opacity-50' : ''}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={item.selected}
+                            onChange={() => togglePreviewItem(index)}
+                            className="w-4 h-4 rounded text-primary-500"
+                          />
+                        </td>
+                        <td className="text-dark-400">{item.linha}</td>
+                        <td className="text-dark-300 font-mono text-sm">{item.data.codigo || '-'}</td>
+                        <td className="text-white">{item.data.nome || <span className="text-red-400">Nome vazio</span>}</td>
+                        <td className="text-dark-400">{item.data.marca || '-'}</td>
+                        <td className="text-right text-dark-300">{formatCurrency(item.data.valor_custo)}</td>
+                        <td className="text-right text-green-400">{formatCurrency(item.data.valor_venda)}</td>
+                        <td className="text-right text-white">{item.data.quantidade_estoque} {item.data.unidade}</td>
+                        <td>
+                          {item.isDuplicate ? (
+                            <div className="flex items-center gap-1">
+                              <AlertTriangle className="w-4 h-4 text-yellow-400" />
+                              <span className="text-yellow-400 text-xs" title={item.duplicateReason}>Duplicado</span>
+                            </div>
+                          ) : !item.data.nome ? (
+                            <XCircle className="w-4 h-4 text-red-400" />
+                          ) : (
+                            <CheckCircle className="w-4 h-4 text-green-400" />
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {importPreview.some(i => i.isDuplicate) && (
+                <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <p className="text-yellow-400 text-sm flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    Itens duplicados foram automaticamente desmarcados. Você pode selecioná-los manualmente se desejar.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-between pt-4 border-t border-dark-700">
+                <Button variant="secondary" onClick={() => { setImportStep('select'); setImportPreview([]) }}>Voltar</Button>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={resetImportModal}>Cancelar</Button>
+                  <Button
+                    onClick={handleConfirmImport}
+                    disabled={importing || importPreview.filter(i => i.selected).length === 0}
+                    leftIcon={importing ? <LoadingSpinner size="sm" /> : <CheckCircle className="w-4 h-4" />}
+                  >
+                    {importing ? 'Importando...' : `Importar ${importPreview.filter(i => i.selected).length} itens`}
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Step 3: Resultado */}
+          {importStep === 'result' && importResult && (
+            <>
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 p-4 bg-green-500/10 rounded-lg flex-1">
+                    <CheckCircle className="w-6 h-6 text-green-400" />
                     <div>
-                      <p className="text-red-400 font-medium">{importResult.errors.length}</p>
-                      <p className="text-dark-400 text-xs">Erros/Duplicados</p>
+                      <p className="text-green-400 font-bold text-xl">{importResult.success}</p>
+                      <p className="text-dark-400 text-sm">Importados com sucesso</p>
                     </div>
+                  </div>
+                  {importResult.errors.length > 0 && (
+                    <div className="flex items-center gap-2 p-4 bg-red-500/10 rounded-lg flex-1">
+                      <XCircle className="w-6 h-6 text-red-400" />
+                      <div>
+                        <p className="text-red-400 font-bold text-xl">{importResult.errors.length}</p>
+                        <p className="text-dark-400 text-sm">Erros encontrados</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {importResult.errors.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
+                    <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
+                    {importResult.errors.slice(0, 50).map((err, i) => (
+                      <p key={i} className="text-red-400 text-xs mb-1">Linha {err.linha}: {err.erro}</p>
+                    ))}
+                    {importResult.errors.length > 50 && (
+                      <p className="text-dark-500 text-xs mt-2">... e mais {importResult.errors.length - 50} erros</p>
+                    )}
                   </div>
                 )}
               </div>
 
-              {importResult.errors.length > 0 && (
-                <div className="max-h-48 overflow-y-auto bg-dark-800 rounded-lg p-3">
-                  <p className="text-dark-400 text-sm mb-2">Detalhes dos erros:</p>
-                  {importResult.errors.slice(0, 50).map((err, i) => (
-                    <p key={i} className="text-red-400 text-xs mb-1">
-                      Linha {err.linha}: {err.erro}
-                    </p>
-                  ))}
-                  {importResult.errors.length > 50 && (
-                    <p className="text-dark-500 text-xs mt-2">... e mais {importResult.errors.length - 50} erros</p>
-                  )}
-                </div>
-              )}
-            </div>
+              <div className="flex justify-end pt-4 border-t border-dark-700">
+                <Button onClick={resetImportModal}>Fechar</Button>
+              </div>
+            </>
           )}
-
-          <div className="flex justify-end pt-4 border-t border-dark-700">
-            <Button variant="secondary" onClick={() => { setIsImportModalOpen(false); setImportResult(null) }}>
-              Fechar
-            </Button>
-          </div>
         </div>
       </Modal>
     </div>
