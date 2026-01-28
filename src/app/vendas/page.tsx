@@ -262,22 +262,24 @@ export default function VendasPage() {
         status: 'concluida'
       }
 
+      const itensParaSalvar = form.itens.map(item => ({
+        produto_id: item.produto_id,
+        tipo: 'produto' as const,
+        descricao: item.descricao,
+        quantidade: item.quantidade,
+        valor_unitario: item.valor_unitario,
+        valor_desconto: item.valor_desconto,
+        valor_total: item.valor_total,
+        custo_unitario: item.custo_unitario
+      }))
+
       let vendaId: number
 
       if (selectedVenda) {
-        await updateVenda(selectedVenda.id, vendaData)
+        await updateVenda(selectedVenda.id, vendaData, itensParaSalvar)
         vendaId = selectedVenda.id
       } else {
-        const novaVenda = await createVenda(vendaData, form.itens.map(item => ({
-          produto_id: item.produto_id,
-          tipo: 'produto' as const,
-          descricao: item.descricao,
-          quantidade: item.quantidade,
-          valor_unitario: item.valor_unitario,
-          valor_desconto: item.valor_desconto,
-          valor_total: item.valor_total,
-          custo_unitario: item.custo_unitario
-        })))
+        const novaVenda = await createVenda(vendaData, itensParaSalvar)
         vendaId = novaVenda.id
 
         // Se for à vista, criar lançamento financeiro

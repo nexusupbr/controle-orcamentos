@@ -1208,7 +1208,8 @@ export async function fetchVendas(filtros?: {
     .from('vendas')
     .select(`
       *,
-      cliente:clientes(*)
+      cliente:clientes(*),
+      itens:itens_venda(*)
     `)
     .order('data_venda', { ascending: false })
 
@@ -1493,7 +1494,7 @@ export async function checkImportacaoOFXDuplicada(hashArquivo: string): Promise<
 
 // ==================== FUNÇÕES VENDAS COMPLEMENTARES ====================
 
-export async function updateVenda(id: number, venda: Partial<Venda>): Promise<Venda> {
+export async function updateVenda(id: number, venda: Partial<Venda>, itens?: Partial<ItemVenda>[]): Promise<Venda> {
   const { data, error } = await supabase
     .from('vendas')
     .update(venda)
@@ -1502,6 +1503,27 @@ export async function updateVenda(id: number, venda: Partial<Venda>): Promise<Ve
     .single()
 
   if (error) throw new Error(error.message)
+
+  // Se foram passados itens, atualizar
+  if (itens !== undefined) {
+    // Deletar itens antigos
+    await supabase.from('itens_venda').delete().eq('venda_id', id)
+
+    // Criar novos itens
+    if (itens.length > 0) {
+      const itensComVenda = itens.map(item => ({
+        ...item,
+        venda_id: id
+      }))
+
+      const { error: itensError } = await supabase
+        .from('itens_venda')
+        .insert(itensComVenda)
+
+      if (itensError) throw new Error(itensError.message)
+    }
+  }
+
   return data
 }
 
@@ -1837,6 +1859,7 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
 
     // Criar os itens da venda baseados nos produtos e serviços da OS
     const itensVenda: Partial<ItemVenda>[] = []
+    let custoTotal = 0
 
     // Adicionar serviços como itens
     if (os.servicos && os.servicos.length > 0) {
@@ -1854,9 +1877,26 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
       })
     }
 
-    // Adicionar produtos como itens
+    // Adicionar produtos como itens (buscando custo do cadastro)
     if (os.produtos && os.produtos.length > 0) {
-      os.produtos.forEach(produto => {
+      for (const produto of os.produtos) {
+        let custoUnitario = 0
+        
+        // Buscar custo do produto no cadastro
+        if (produto.produto_id) {
+          const { data: produtoCadastro } = await supabase
+            .from('produtos')
+            .select('valor_custo, custo_medio')
+            .eq('id', produto.produto_id)
+            .single()
+          
+          if (produtoCadastro) {
+            custoUnitario = produtoCadastro.custo_medio || produtoCadastro.valor_custo || 0
+          }
+        }
+        
+        custoTotal += custoUnitario * produto.quantidade
+        
         itensVenda.push({
           produto_id: produto.produto_id,
           tipo: 'produto',
@@ -1865,10 +1905,14 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
           valor_unitario: produto.valor_unitario,
           valor_desconto: 0,
           valor_total: produto.valor_total,
-          custo_unitario: 0
+          custo_unitario: custoUnitario
         })
-      })
+      }
     }
+
+    // Calcular lucro
+    const lucroBruto = os.valor_total - custoTotal
+    const margemLucro = os.valor_total > 0 ? (lucroBruto / os.valor_total) * 100 : 0
 
     // Gerar número da venda
     const { data: ultimaVenda } = await supabase
@@ -1890,9 +1934,9 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
       valor_desconto: os.desconto_valor,
       valor_frete: 0,
       valor_total: os.valor_total,
-      custo_total: 0,
-      lucro_bruto: 0,
-      margem_lucro: 0,
+      custo_total: custoTotal,
+      lucro_bruto: lucroBruto,
+      margem_lucro: margemLucro,
       nota_fiscal_emitida: false,
       valor_impostos: 0,
       status: 'concluida',
