@@ -1880,11 +1880,10 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
     const ultimoNumero = ultimaVenda?.[0]?.numero ? parseInt(ultimaVenda[0].numero) : 0
     const novoNumero = String(ultimoNumero + 1).padStart(6, '0')
 
-    // Criar a venda
+    // Criar a venda (sem orcamento_id, pois referencia tabela diferente)
     const vendaData: Partial<Venda> = {
       numero: novoNumero,
       cliente_id: os.cliente_id,
-      orcamento_id: os.id,
       data_venda: new Date().toISOString().split('T')[0],
       valor_produtos: os.total_produtos,
       valor_servicos: os.total_servicos,
@@ -1897,7 +1896,7 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
       nota_fiscal_emitida: false,
       valor_impostos: 0,
       status: 'finalizada',
-      observacoes: `Venda gerada automaticamente do Orçamento #${os.numero}`
+      observacoes: `Venda gerada automaticamente do Orçamento (OS) #${os.numero}`
     }
 
     const venda = await createVenda(vendaData, itensVenda)
