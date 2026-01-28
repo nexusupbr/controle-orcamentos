@@ -93,6 +93,10 @@ ON CONFLICT DO NOTHING;
 -- Adicionar coluna tipo_cadastro na tabela clientes (se não existir)
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_cadastro TEXT DEFAULT 'cliente';
 
+-- Adicionar colunas de produtor rural na tabela clientes (se não existirem)
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS produtor_rural BOOLEAN DEFAULT FALSE;
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS inscricao_produtor_rural TEXT;
+
 -- =====================================================
 -- CORRIGIR CATEGORIAS FINANCEIRAS DUPLICADAS
 -- =====================================================
