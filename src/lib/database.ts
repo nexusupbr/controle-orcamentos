@@ -1821,11 +1821,108 @@ export async function deleteOrdemServico(id: number): Promise<void> {
   if (error) throw new Error(error.message)
 }
 
-export async function updateStatusOS(id: number, status: OrdemServico['status']): Promise<void> {
-  const { error } = await supabase
-    .from('ordens_servico')
-    .update({ status, updated_at: new Date().toISOString() })
-    .eq('id', id)
+export async function updateStatusOS(id: number, status: OrdemServico['status']): Promise<{ venda_id?: number }> {
+  let venda_id: number | undefined
 
-  if (error) throw new Error(error.message)
+  // Se o status for "aprovado", criar automaticamente uma venda
+  if (status === 'aprovado') {
+    // Buscar a OS completa com produtos e serviços
+    const os = await fetchOrdemServicoById(id)
+    if (!os) throw new Error('Ordem de serviço não encontrada')
+
+    // Verificar se já não existe uma venda vinculada
+    if (os.venda_id) {
+      throw new Error('Este orçamento já possui uma venda vinculada')
+    }
+
+    // Criar os itens da venda baseados nos produtos e serviços da OS
+    const itensVenda: Partial<ItemVenda>[] = []
+
+    // Adicionar serviços como itens
+    if (os.servicos && os.servicos.length > 0) {
+      os.servicos.forEach(servico => {
+        itensVenda.push({
+          produto_id: null,
+          tipo: 'servico',
+          descricao: servico.descricao,
+          quantidade: servico.quantidade,
+          valor_unitario: servico.valor_unitario,
+          valor_desconto: 0,
+          valor_total: servico.valor_total,
+          custo_unitario: 0
+        })
+      })
+    }
+
+    // Adicionar produtos como itens
+    if (os.produtos && os.produtos.length > 0) {
+      os.produtos.forEach(produto => {
+        itensVenda.push({
+          produto_id: produto.produto_id,
+          tipo: 'produto',
+          descricao: produto.descricao,
+          quantidade: produto.quantidade,
+          valor_unitario: produto.valor_unitario,
+          valor_desconto: 0,
+          valor_total: produto.valor_total,
+          custo_unitario: 0
+        })
+      })
+    }
+
+    // Gerar número da venda
+    const { data: ultimaVenda } = await supabase
+      .from('vendas')
+      .select('numero')
+      .order('id', { ascending: false })
+      .limit(1)
+
+    const ultimoNumero = ultimaVenda?.[0]?.numero ? parseInt(ultimaVenda[0].numero) : 0
+    const novoNumero = String(ultimoNumero + 1).padStart(6, '0')
+
+    // Criar a venda
+    const vendaData: Partial<Venda> = {
+      numero: novoNumero,
+      cliente_id: os.cliente_id,
+      orcamento_id: os.id,
+      data_venda: new Date().toISOString().split('T')[0],
+      valor_produtos: os.total_produtos,
+      valor_servicos: os.total_servicos,
+      valor_desconto: os.desconto_valor,
+      valor_frete: 0,
+      valor_total: os.valor_total,
+      custo_total: 0,
+      lucro_bruto: 0,
+      margem_lucro: 0,
+      nota_fiscal_emitida: false,
+      valor_impostos: 0,
+      status: 'finalizada',
+      observacoes: `Venda gerada automaticamente do Orçamento #${os.numero}`
+    }
+
+    const venda = await createVenda(vendaData, itensVenda)
+    venda_id = venda.id
+
+    // Atualizar a OS com o venda_id e o status
+    const { error: updateError } = await supabase
+      .from('ordens_servico')
+      .update({ 
+        status, 
+        venda_id: venda.id,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', id)
+
+    if (updateError) throw new Error(updateError.message)
+  } else {
+    // Para outros status, apenas atualizar
+    const { error } = await supabase
+      .from('ordens_servico')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id)
+
+    if (error) throw new Error(error.message)
+  }
+
+  return { venda_id }
 }

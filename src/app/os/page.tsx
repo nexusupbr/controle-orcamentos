@@ -584,10 +584,17 @@ export default function OSPage() {
   // Alterar status
   const handleStatusChange = async (id: number, status: OrdemServico['status']) => {
     try {
-      await updateStatusOS(id, status)
+      const result = await updateStatusOS(id, status)
+      
+      // Se foi criada uma venda, mostrar mensagem de sucesso
+      if (result.venda_id && status === 'aprovado') {
+        alert(`✅ Orçamento aprovado!\n\nVenda #${result.venda_id} criada automaticamente.\n\nAcesse a página de Vendas para visualizá-la.`)
+      }
+      
       await loadData()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao atualizar status:', err)
+      alert(`❌ Erro ao atualizar status:\n${err.message || 'Erro desconhecido'}`)
     }
   }
 
