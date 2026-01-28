@@ -331,13 +331,15 @@ export default function ClientesPage() {
       if (char === '"') {
         inQuotes = !inQuotes
       } else if (char === delimiter && !inQuotes) {
-        result.push(current.trim())
+        // Remove aspas residuais e espaços
+        result.push(current.replace(/"/g, '').trim())
         current = ''
       } else {
         current += char
       }
     }
-    result.push(current.trim())
+    // Remove aspas residuais do último campo
+    result.push(current.replace(/"/g, '').trim())
     return result
   }
 
