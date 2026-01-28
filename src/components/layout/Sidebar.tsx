@@ -21,7 +21,8 @@ import {
   DollarSign,
   PieChart,
   Receipt,
-  FileCheck
+  FileCheck,
+  ClipboardList
 } from 'lucide-react'
 import { useState } from 'react'
 import { cn, getAssetPath } from '@/lib/utils'
@@ -32,6 +33,7 @@ import { useAdminAuth } from '@/contexts/AdminAuthContext'
 const adminNavigation = [
   { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
   { name: 'Orçamentos', href: '/orcamentos', icon: FileText },
+  { name: 'Orçamentos (Detalhado)', href: '/os', icon: ClipboardList },
   { name: 'Obras', href: '/obras', icon: HardHat },
   { name: 'Vendas', href: '/vendas', icon: Receipt },
   { name: 'Notas Fiscais', href: '/notas-fiscais', icon: FileCheck },
@@ -52,7 +54,7 @@ const simpleNavigation = [
 ]
 
 // Rotas administrativas
-const adminRoutes = ['/admin', '/orcamentos', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais']
+const adminRoutes = ['/admin', '/orcamentos', '/os', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais']
 
 export function Sidebar() {
   const pathname = usePathname()

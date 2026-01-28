@@ -268,3 +268,113 @@ CREATE INDEX IF NOT EXISTS idx_notas_fiscais_referencia ON notas_fiscais(referen
 ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_id INT REFERENCES notas_fiscais(id) ON DELETE SET NULL;
 ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_status TEXT;
 ALTER TABLE vendas ADD COLUMN IF NOT EXISTS nota_fiscal_chave TEXT;
+
+-- =====================================================
+-- SISTEMA DE ORDEM DE SERVIÇO (OS)
+-- =====================================================
+
+-- Tabela principal de Ordens de Serviço
+CREATE TABLE IF NOT EXISTS ordens_servico (
+  id SERIAL PRIMARY KEY,
+  numero INT UNIQUE NOT NULL,
+  
+  -- Cliente
+  cliente_id INT REFERENCES clientes(id) ON DELETE SET NULL,
+  cliente_nome TEXT NOT NULL,
+  
+  -- Datas
+  data_os DATE NOT NULL DEFAULT CURRENT_DATE,
+  data_entrega DATE,
+  
+  -- Status: orcamento, aprovado, em_execucao, concluido, cancelado, faturado
+  status TEXT CHECK (status IN ('orcamento', 'aprovado', 'em_execucao', 'concluido', 'cancelado', 'faturado')) DEFAULT 'orcamento',
+  
+  -- Tipo de atendimento
+  tipo_atendimento TEXT DEFAULT 'Externo',
+  
+  -- Valores calculados
+  total_servicos DECIMAL(15,2) DEFAULT 0,
+  total_produtos DECIMAL(15,2) DEFAULT 0,
+  total_horas DECIMAL(10,2) DEFAULT 0,
+  total_itens INT DEFAULT 0,
+  valor_total DECIMAL(15,2) DEFAULT 0,
+  
+  -- Desconto
+  desconto_percentual DECIMAL(5,2) DEFAULT 0,
+  desconto_valor DECIMAL(15,2) DEFAULT 0,
+  
+  -- Observações
+  observacoes TEXT,
+  observacoes_internas TEXT,
+  
+  -- Garantia
+  garantia_dias INT DEFAULT 90,
+  
+  -- Vínculo com venda/NF (quando faturado)
+  venda_id INT REFERENCES vendas(id) ON DELETE SET NULL,
+  nota_fiscal_id INT REFERENCES notas_fiscais(id) ON DELETE SET NULL,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Itens de serviço da OS
+CREATE TABLE IF NOT EXISTS os_servicos (
+  id SERIAL PRIMARY KEY,
+  os_id INT REFERENCES ordens_servico(id) ON DELETE CASCADE,
+  
+  descricao TEXT NOT NULL,
+  quantidade DECIMAL(10,2) DEFAULT 1,
+  valor_unitario DECIMAL(15,2) DEFAULT 0,
+  valor_total DECIMAL(15,2) DEFAULT 0,
+  
+  -- Ordem de exibição
+  ordem INT DEFAULT 0,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Itens de produto da OS
+CREATE TABLE IF NOT EXISTS os_produtos (
+  id SERIAL PRIMARY KEY,
+  os_id INT REFERENCES ordens_servico(id) ON DELETE CASCADE,
+  
+  -- Produto (pode ser vinculado ou avulso)
+  produto_id INT REFERENCES produtos(id) ON DELETE SET NULL,
+  codigo TEXT,
+  descricao TEXT NOT NULL,
+  unidade TEXT DEFAULT 'UN',
+  ncm TEXT,
+  
+  quantidade DECIMAL(10,3) DEFAULT 1,
+  valor_unitario DECIMAL(15,2) DEFAULT 0,
+  valor_total DECIMAL(15,2) DEFAULT 0,
+  
+  -- Ordem de exibição
+  ordem INT DEFAULT 0,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Índices para performance
+CREATE INDEX IF NOT EXISTS idx_os_cliente ON ordens_servico(cliente_id);
+CREATE INDEX IF NOT EXISTS idx_os_status ON ordens_servico(status);
+CREATE INDEX IF NOT EXISTS idx_os_data ON ordens_servico(data_os);
+CREATE INDEX IF NOT EXISTS idx_os_numero ON ordens_servico(numero);
+CREATE INDEX IF NOT EXISTS idx_os_servicos_os ON os_servicos(os_id);
+CREATE INDEX IF NOT EXISTS idx_os_produtos_os ON os_produtos(os_id);
+
+-- Sequence para número da OS
+CREATE SEQUENCE IF NOT EXISTS os_numero_seq START 1;
+
+-- Função para obter próximo número de OS
+CREATE OR REPLACE FUNCTION get_proximo_numero_os()
+RETURNS INT AS $$
+DECLARE
+  proximo INT;
+BEGIN
+  SELECT COALESCE(MAX(numero), 0) + 1 INTO proximo FROM ordens_servico;
+  RETURN proximo;
+END;
+$$ LANGUAGE plpgsql;

@@ -1573,3 +1573,259 @@ export async function createNotaFiscalEntrada(
 
   return notaData
 }
+
+// ==================== TIPOS - ORDEM DE SERVIÇO ====================
+
+export interface OrdemServico {
+  id: number
+  numero: number
+  cliente_id: number | null
+  cliente_nome: string
+  data_os: string
+  data_entrega: string | null
+  status: 'orcamento' | 'aprovado' | 'em_execucao' | 'concluido' | 'cancelado' | 'faturado'
+  tipo_atendimento: string
+  total_servicos: number
+  total_produtos: number
+  total_horas: number
+  total_itens: number
+  valor_total: number
+  desconto_percentual: number
+  desconto_valor: number
+  observacoes: string | null
+  observacoes_internas: string | null
+  garantia_dias: number
+  venda_id: number | null
+  nota_fiscal_id: number | null
+  created_at?: string
+  updated_at?: string
+  // Relações
+  cliente?: Cliente
+  servicos?: OSServico[]
+  produtos?: OSProduto[]
+}
+
+export interface OSServico {
+  id?: number
+  os_id?: number
+  descricao: string
+  quantidade: number
+  valor_unitario: number
+  valor_total: number
+  ordem: number
+}
+
+export interface OSProduto {
+  id?: number
+  os_id?: number
+  produto_id: number | null
+  codigo: string | null
+  descricao: string
+  unidade: string
+  ncm: string | null
+  quantidade: number
+  valor_unitario: number
+  valor_total: number
+  ordem: number
+}
+
+// ==================== FUNÇÕES - ORDEM DE SERVIÇO ====================
+
+export async function fetchOrdensServico(): Promise<OrdemServico[]> {
+  const { data, error } = await supabase
+    .from('ordens_servico')
+    .select(`
+      *,
+      cliente:clientes(id, nome, razao_social, tipo_pessoa)
+    `)
+    .order('numero', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function fetchOrdemServicoById(id: number): Promise<OrdemServico | null> {
+  const { data, error } = await supabase
+    .from('ordens_servico')
+    .select(`
+      *,
+      cliente:clientes(id, nome, razao_social, tipo_pessoa, cnpj, cpf, telefone, celular, email, endereco, numero, bairro, cidade, estado, cep),
+      servicos:os_servicos(*),
+      produtos:os_produtos(*)
+    `)
+    .eq('id', id)
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+export async function getProximoNumeroOS(): Promise<number> {
+  const { data, error } = await supabase
+    .from('ordens_servico')
+    .select('numero')
+    .order('numero', { ascending: false })
+    .limit(1)
+
+  if (error) throw error
+  return (data?.[0]?.numero || 0) + 1
+}
+
+export async function createOrdemServico(
+  os: Partial<OrdemServico>,
+  servicos: OSServico[],
+  produtos: OSProduto[]
+): Promise<OrdemServico> {
+  // Obter próximo número
+  const numero = await getProximoNumeroOS()
+  
+  // Calcular totais
+  const totalServicos = servicos.reduce((acc, s) => acc + (s.valor_total || 0), 0)
+  const totalProdutos = produtos.reduce((acc, p) => acc + (p.valor_total || 0), 0)
+  const totalHoras = servicos.reduce((acc, s) => acc + (s.quantidade || 0), 0)
+  const totalItens = produtos.reduce((acc, p) => acc + (p.quantidade || 0), 0)
+  const subtotal = totalServicos + totalProdutos
+  const descontoValor = os.desconto_percentual ? subtotal * (os.desconto_percentual / 100) : (os.desconto_valor || 0)
+  const valorTotal = subtotal - descontoValor
+
+  // Criar OS
+  const { data: osData, error: osError } = await supabase
+    .from('ordens_servico')
+    .insert([{
+      ...os,
+      numero,
+      total_servicos: totalServicos,
+      total_produtos: totalProdutos,
+      total_horas: totalHoras,
+      total_itens: totalItens,
+      desconto_valor: descontoValor,
+      valor_total: valorTotal
+    }])
+    .select()
+    .single()
+
+  if (osError) throw new Error(osError.message)
+
+  // Criar serviços
+  if (servicos.length > 0) {
+    const servicosComOS = servicos.map((s, i) => ({
+      ...s,
+      os_id: osData.id,
+      ordem: i
+    }))
+
+    const { error: servError } = await supabase
+      .from('os_servicos')
+      .insert(servicosComOS)
+
+    if (servError) throw new Error(servError.message)
+  }
+
+  // Criar produtos
+  if (produtos.length > 0) {
+    const produtosComOS = produtos.map((p, i) => ({
+      ...p,
+      os_id: osData.id,
+      ordem: i
+    }))
+
+    const { error: prodError } = await supabase
+      .from('os_produtos')
+      .insert(produtosComOS)
+
+    if (prodError) throw new Error(prodError.message)
+  }
+
+  return osData
+}
+
+export async function updateOrdemServico(
+  id: number,
+  os: Partial<OrdemServico>,
+  servicos: OSServico[],
+  produtos: OSProduto[]
+): Promise<OrdemServico> {
+  // Calcular totais
+  const totalServicos = servicos.reduce((acc, s) => acc + (s.valor_total || 0), 0)
+  const totalProdutos = produtos.reduce((acc, p) => acc + (p.valor_total || 0), 0)
+  const totalHoras = servicos.reduce((acc, s) => acc + (s.quantidade || 0), 0)
+  const totalItens = produtos.reduce((acc, p) => acc + (p.quantidade || 0), 0)
+  const subtotal = totalServicos + totalProdutos
+  const descontoValor = os.desconto_percentual ? subtotal * (os.desconto_percentual / 100) : (os.desconto_valor || 0)
+  const valorTotal = subtotal - descontoValor
+
+  // Atualizar OS
+  const { data: osData, error: osError } = await supabase
+    .from('ordens_servico')
+    .update({
+      ...os,
+      total_servicos: totalServicos,
+      total_produtos: totalProdutos,
+      total_horas: totalHoras,
+      total_itens: totalItens,
+      desconto_valor: descontoValor,
+      valor_total: valorTotal,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (osError) throw new Error(osError.message)
+
+  // Deletar serviços e produtos antigos
+  await supabase.from('os_servicos').delete().eq('os_id', id)
+  await supabase.from('os_produtos').delete().eq('os_id', id)
+
+  // Criar novos serviços
+  if (servicos.length > 0) {
+    const servicosComOS = servicos.map((s, i) => ({
+      descricao: s.descricao,
+      quantidade: s.quantidade,
+      valor_unitario: s.valor_unitario,
+      valor_total: s.valor_total,
+      os_id: id,
+      ordem: i
+    }))
+
+    await supabase.from('os_servicos').insert(servicosComOS)
+  }
+
+  // Criar novos produtos
+  if (produtos.length > 0) {
+    const produtosComOS = produtos.map((p, i) => ({
+      produto_id: p.produto_id,
+      codigo: p.codigo,
+      descricao: p.descricao,
+      unidade: p.unidade,
+      ncm: p.ncm,
+      quantidade: p.quantidade,
+      valor_unitario: p.valor_unitario,
+      valor_total: p.valor_total,
+      os_id: id,
+      ordem: i
+    }))
+
+    await supabase.from('os_produtos').insert(produtosComOS)
+  }
+
+  return osData
+}
+
+export async function deleteOrdemServico(id: number): Promise<void> {
+  const { error } = await supabase
+    .from('ordens_servico')
+    .delete()
+    .eq('id', id)
+
+  if (error) throw new Error(error.message)
+}
+
+export async function updateStatusOS(id: number, status: OrdemServico['status']): Promise<void> {
+  const { error } = await supabase
+    .from('ordens_servico')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw new Error(error.message)
+}

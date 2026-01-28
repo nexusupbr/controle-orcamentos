@@ -131,13 +131,24 @@ export default function ClientesPage() {
   }
 
   const filteredClientes = clientes.filter(c => {
-    const matchSearch = c.nome?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.razao_social?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.cpf?.includes(searchTerm.replace(/\D/g, '')) ||
-      c.cnpj?.includes(searchTerm.replace(/\D/g, '')) ||
-      c.email?.toLowerCase().includes(searchTerm.toLowerCase())
+    // Busca por texto - apenas por nome, razão social ou nome fantasia
+    const searchLower = searchTerm.toLowerCase().trim()
+    
+    const matchSearch = searchTerm.trim() === '' || (
+      (c.nome && c.nome.toLowerCase().includes(searchLower)) ||
+      (c.razao_social && c.razao_social.toLowerCase().includes(searchLower)) ||
+      (c.nome_fantasia && c.nome_fantasia.toLowerCase().includes(searchLower))
+    )
+    
+    // Filtro por tipo pessoa (PF/PJ)
     const matchTipo = filterTipo === 'todos' || c.tipo_pessoa === filterTipo
-    return matchSearch && matchTipo
+    
+    // Filtro por tipo cadastro (cliente/fornecedor)
+    const matchCadastro = filterCadastro === 'todos' || 
+      c.tipo_cadastro === filterCadastro || 
+      c.tipo_cadastro === 'ambos'
+    
+    return matchSearch && matchTipo && matchCadastro
   })
 
   const handleConsultarCNPJ = async () => {
@@ -557,7 +568,7 @@ export default function ClientesPage() {
 
       <div className="glass-card p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative md:col-span-2"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" /><input type="text" placeholder="Buscar por nome, CPF/CNPJ, email..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input pl-12 w-full" /></div>
+          <div className="relative md:col-span-2"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" /><input type="text" placeholder="Buscar por nome, razão social ou nome fantasia..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input pl-12 w-full" /></div>
           <select value={filterTipo} onChange={(e) => setFilterTipo(e.target.value as any)} className="input"><option value="todos">Todos os tipos</option><option value="PF">Pessoa Física</option><option value="PJ">Pessoa Jurídica</option></select>
         </div>
         {selectedIds.size > 0 && (
