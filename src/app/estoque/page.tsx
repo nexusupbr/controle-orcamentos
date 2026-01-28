@@ -403,7 +403,14 @@ export default function EstoquePage() {
         const delimiter = lines[0].includes(';') ? ';' : ','
         const dataLines = lines.slice(1)
         
+        // Recarregar lista de produtos para garantir dados atualizados
+        const produtosAtualizados = await fetchProdutos()
+        setProdutos(produtosAtualizados)
+        
         const previewItems: ImportPreviewItem[] = []
+        const codigosNoCSV = new Map<string, number>() // Para detectar duplicados dentro do CSV
+        const nomesNoCSV = new Map<string, number>()
+        const codigosBarrasNoCSV = new Map<string, number>()
 
         for (let i = 0; i < dataLines.length; i++) {
           const line = dataLines[i]
@@ -430,11 +437,11 @@ export default function EstoquePage() {
           const tamanho = columns[31] || ''
           const localizacao = columns[32] || ''
 
-          // Verificar duplicação
+          // Verificar duplicação no banco
           let isDuplicate = false
           let duplicateReason = ''
           
-          const produtoExistente = produtos.find(p => 
+          const produtoExistente = produtosAtualizados.find(p => 
             (codigo && p.codigo === codigo) || 
             p.nome.toLowerCase() === nome.toLowerCase() ||
             (codigoBarras && p.codigo_barras === codigoBarras)
@@ -448,6 +455,40 @@ export default function EstoquePage() {
               duplicateReason = `Código de barras já cadastrado: ${produtoExistente.nome}`
             } else {
               duplicateReason = `Nome similar já cadastrado: ${produtoExistente.nome}`
+            }
+          }
+          
+          // Verificar duplicação DENTRO do próprio CSV
+          if (!isDuplicate) {
+            if (codigo) {
+              const linhaAnterior = codigosNoCSV.get(codigo)
+              if (linhaAnterior !== undefined) {
+                isDuplicate = true
+                duplicateReason = `Código "${codigo}" duplicado no CSV (mesmo que linha ${linhaAnterior})`
+              } else {
+                codigosNoCSV.set(codigo, i + 2)
+              }
+            }
+            
+            if (!isDuplicate && nome) {
+              const nomeNormalizado = nome.toLowerCase().trim()
+              const linhaAnterior = nomesNoCSV.get(nomeNormalizado)
+              if (linhaAnterior !== undefined) {
+                isDuplicate = true
+                duplicateReason = `Nome "${nome}" duplicado no CSV (mesmo que linha ${linhaAnterior})`
+              } else {
+                nomesNoCSV.set(nomeNormalizado, i + 2)
+              }
+            }
+            
+            if (!isDuplicate && codigoBarras) {
+              const linhaAnterior = codigosBarrasNoCSV.get(codigoBarras)
+              if (linhaAnterior !== undefined) {
+                isDuplicate = true
+                duplicateReason = `Código de barras duplicado no CSV (mesmo que linha ${linhaAnterior})`
+              } else {
+                codigosBarrasNoCSV.set(codigoBarras, i + 2)
+              }
             }
           }
 
@@ -564,13 +605,17 @@ export default function EstoquePage() {
   // Formador de preço
   const calcularPrecoVenda = () => {
     const { custo, margem, impostos, frete, outros } = formadorData
-    const custoTotal = custo + impostos + frete + outros
+    // Calcular valores percentuais sobre o custo
+    const valorImpostos = custo * (impostos / 100)
+    const valorFrete = custo * (frete / 100)
+    const valorOutros = custo * (outros / 100)
+    const custoTotal = custo + valorImpostos + valorFrete + valorOutros
     const precoVenda = custoTotal * (1 + margem / 100)
-    return precoVenda
+    return { precoVenda, custoTotal, valorImpostos, valorFrete, valorOutros }
   }
 
   const aplicarFormadorPreco = () => {
-    const precoVenda = calcularPrecoVenda()
+    const { precoVenda } = calcularPrecoVenda()
     setFormData({
       ...formData,
       valor_custo: formadorData.custo,
@@ -1324,67 +1369,113 @@ export default function EstoquePage() {
       >
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">Custo do Produto</label>
+            <label className="block text-sm font-medium text-dark-300 mb-2">Custo do Produto (R$)</label>
             <input
               type="number"
               step="0.01"
               value={formadorData.custo}
               onChange={(e) => setFormadorData({ ...formadorData, custo: Number(e.target.value) })}
               className="input w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">Impostos</label>
-            <input
-              type="number"
-              step="0.01"
-              value={formadorData.impostos}
-              onChange={(e) => setFormadorData({ ...formadorData, impostos: Number(e.target.value) })}
-              className="input w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">Frete</label>
-            <input
-              type="number"
-              step="0.01"
-              value={formadorData.frete}
-              onChange={(e) => setFormadorData({ ...formadorData, frete: Number(e.target.value) })}
-              className="input w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">Outros Custos</label>
-            <input
-              type="number"
-              step="0.01"
-              value={formadorData.outros}
-              onChange={(e) => setFormadorData({ ...formadorData, outros: Number(e.target.value) })}
-              className="input w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">Margem de Lucro (%)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={formadorData.margem}
-              onChange={(e) => setFormadorData({ ...formadorData, margem: Number(e.target.value) })}
-              className="input w-full"
+              placeholder="0,00"
             />
           </div>
           
-          <div className="border-t border-dark-700 pt-4">
-            <div className="flex justify-between items-center mb-2">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">Impostos (%)</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  value={formadorData.impostos}
+                  onChange={(e) => setFormadorData({ ...formadorData, impostos: Number(e.target.value) })}
+                  className="input w-full pr-8"
+                  placeholder="0"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400">%</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">Frete (%)</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  value={formadorData.frete}
+                  onChange={(e) => setFormadorData({ ...formadorData, frete: Number(e.target.value) })}
+                  className="input w-full pr-8"
+                  placeholder="0"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400">%</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">Outros (%)</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  value={formadorData.outros}
+                  onChange={(e) => setFormadorData({ ...formadorData, outros: Number(e.target.value) })}
+                  className="input w-full pr-8"
+                  placeholder="0"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400">%</span>
+              </div>
+            </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-2">Margem de Lucro (%)</label>
+            <div className="relative">
+              <input
+                type="number"
+                step="0.1"
+                value={formadorData.margem}
+                onChange={(e) => setFormadorData({ ...formadorData, margem: Number(e.target.value) })}
+                className="input w-full pr-8"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400">%</span>
+            </div>
+          </div>
+          
+          <div className="border-t border-dark-700 pt-4 space-y-2">
+            {formadorData.custo > 0 && (
+              <>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-dark-400">Custo Base:</span>
+                  <span className="text-white">{formatCurrency(formadorData.custo)}</span>
+                </div>
+                {formadorData.impostos > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-dark-400">+ Impostos ({formadorData.impostos}%):</span>
+                    <span className="text-white">{formatCurrency(calcularPrecoVenda().valorImpostos)}</span>
+                  </div>
+                )}
+                {formadorData.frete > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-dark-400">+ Frete ({formadorData.frete}%):</span>
+                    <span className="text-white">{formatCurrency(calcularPrecoVenda().valorFrete)}</span>
+                  </div>
+                )}
+                {formadorData.outros > 0 && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-dark-400">+ Outros ({formadorData.outros}%):</span>
+                    <span className="text-white">{formatCurrency(calcularPrecoVenda().valorOutros)}</span>
+                  </div>
+                )}
+              </>
+            )}
+            <div className="flex justify-between items-center pt-2 border-t border-dark-700">
               <span className="text-dark-400">Custo Total:</span>
               <span className="text-white font-medium">
-                {formatCurrency(formadorData.custo + formadorData.impostos + formadorData.frete + formadorData.outros)}
+                {formatCurrency(calcularPrecoVenda().custoTotal)}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-dark-400">Preço de Venda Sugerido:</span>
               <span className="text-green-400 font-bold text-lg">
-                {formatCurrency(calcularPrecoVenda())}
+                {formatCurrency(calcularPrecoVenda().precoVenda)}
               </span>
             </div>
           </div>

@@ -93,6 +93,25 @@ ON CONFLICT DO NOTHING;
 -- Adicionar coluna tipo_cadastro na tabela clientes (se não existir)
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_cadastro TEXT DEFAULT 'cliente';
 
+-- =====================================================
+-- CORRIGIR CATEGORIAS FINANCEIRAS DUPLICADAS
+-- =====================================================
+
+-- Passo 1: Identificar e remover categorias duplicadas (mantendo a de menor ID)
+DELETE FROM categorias_financeiras 
+WHERE id NOT IN (
+  SELECT MIN(id) 
+  FROM categorias_financeiras 
+  GROUP BY nome, tipo
+);
+
+-- Passo 2: Adicionar constraint UNIQUE para evitar duplicatas futuras
+ALTER TABLE categorias_financeiras 
+ADD CONSTRAINT categorias_financeiras_nome_tipo_unique UNIQUE (nome, tipo);
+
+-- Verificar resultado (execute separadamente para ver as categorias restantes)
+-- SELECT id, nome, tipo FROM categorias_financeiras ORDER BY tipo, nome;
+
 -- Atualizar registros existentes que podem estar NULL
 UPDATE clientes SET tipo_cadastro = 'cliente' WHERE tipo_cadastro IS NULL;
 

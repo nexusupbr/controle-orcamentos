@@ -355,7 +355,12 @@ export default function ClientesPage() {
         const delimiter = lines[0].includes(';') ? ';' : ','
         const dataLines = lines.slice(1)
         
+        // Recarregar lista de clientes para garantir dados atualizados
+        const clientesAtualizados = await fetchClientes()
+        setClientes(clientesAtualizados)
+        
         const previewItems: ImportPreviewItem[] = []
+        const documentosNoCSV = new Map<string, number>() // Para detectar duplicados dentro do CSV
 
         for (let i = 0; i < dataLines.length; i++) {
           const line = dataLines[i]
@@ -389,21 +394,32 @@ export default function ClientesPage() {
           const regimeTributario = columns[26] || ''
           const situacao = columns[27]?.toLowerCase().includes('ativo') !== false
 
-          // Verificar duplicação
+          // Verificar duplicação no banco
           let isDuplicate = false
           let duplicateReason = ''
           
           if (tipoPessoa === 'PJ' && documento) {
-            const existente = clientes.find(c => c.cnpj?.replace(/\D/g, '') === documento)
+            const existente = clientesAtualizados.find(c => c.cnpj?.replace(/\D/g, '') === documento)
             if (existente) {
               isDuplicate = true
               duplicateReason = `CNPJ já cadastrado: ${existente.razao_social || existente.nome}`
             }
           } else if (tipoPessoa === 'PF' && documento) {
-            const existente = clientes.find(c => c.cpf?.replace(/\D/g, '') === documento)
+            const existente = clientesAtualizados.find(c => c.cpf?.replace(/\D/g, '') === documento)
             if (existente) {
               isDuplicate = true
               duplicateReason = `CPF já cadastrado: ${existente.nome}`
+            }
+          }
+          
+          // Verificar duplicação DENTRO do próprio CSV
+          if (!isDuplicate && documento) {
+            const linhaAnterior = documentosNoCSV.get(documento)
+            if (linhaAnterior !== undefined) {
+              isDuplicate = true
+              duplicateReason = `Documento duplicado no CSV (mesmo que linha ${linhaAnterior})`
+            } else {
+              documentosNoCSV.set(documento, i + 2)
             }
           }
 
