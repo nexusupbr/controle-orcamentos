@@ -1895,7 +1895,7 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
       margem_lucro: 0,
       nota_fiscal_emitida: false,
       valor_impostos: 0,
-      status: 'finalizada',
+      status: 'concluida',
       observacoes: `Venda gerada automaticamente do Orçamento (OS) #${os.numero}`
     }
 
