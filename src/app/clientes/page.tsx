@@ -231,7 +231,24 @@ export default function ClientesPage() {
       }
       if (editingId) { await updateCliente(editingId, clienteData) } else { await createCliente(clienteData) }
       await loadData(); closeModal()
-    } catch (err) { const message = err instanceof Error ? err.message : 'Erro ao salvar'; setFormError(message) }
+    } catch (err) { 
+      let message = err instanceof Error ? err.message : 'Erro ao salvar'
+      // Traduzir mensagens de erro do banco de dados
+      if (message.includes('clientes_cpf_key')) {
+        message = 'CPF já cadastrado no sistema. Se for um produtor rural com inscrição diferente, entre em contato com o suporte.'
+      } else if (message.includes('clientes_cnpj_key')) {
+        message = 'CNPJ já cadastrado no sistema.'
+      } else if (message.includes('clientes_email_key')) {
+        message = 'E-mail já cadastrado no sistema.'
+      } else if (message.includes('duplicate key')) {
+        message = 'Este registro já existe no sistema. Verifique CPF, CNPJ ou E-mail.'
+      } else if (message.includes('foreign key')) {
+        message = 'Erro de referência: este registro está vinculado a outros dados.'
+      } else if (message.includes('violates check')) {
+        message = 'Dados inválidos. Verifique os campos preenchidos.'
+      }
+      setFormError(message)
+    }
     finally { setSaving(false) }
   }
 
@@ -651,7 +668,12 @@ export default function ClientesPage() {
               </div>
               <div className="border-t border-dark-700 pt-4">
                 <label className="flex items-center gap-2 cursor-pointer mb-4"><input type="checkbox" checked={formData.produtor_rural} onChange={(e) => setFormData({ ...formData, produtor_rural: e.target.checked })} className="w-5 h-5 rounded text-primary-500" /><span className="text-white font-medium">Produtor Rural</span></label>
-                {formData.produtor_rural && <div><label className="block text-sm text-dark-300 mb-2">Inscrição de Produtor Rural</label><input type="text" value={formData.inscricao_produtor_rural} onChange={(e) => setFormData({ ...formData, inscricao_produtor_rural: e.target.value })} className="input w-full md:w-1/2" placeholder="Número da inscrição" /></div>}
+                {formData.produtor_rural && (
+                  <div className="space-y-4 pl-7">
+                    <div><label className="block text-sm text-dark-300 mb-2">Inscrição de Produtor Rural</label><input type="text" value={formData.inscricao_produtor_rural} onChange={(e) => setFormData({ ...formData, inscricao_produtor_rural: e.target.value })} className="input w-full md:w-1/2" placeholder="Número da inscrição" /></div>
+                    <div><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={formData.contribuinte_icms} onChange={(e) => setFormData({ ...formData, contribuinte_icms: e.target.checked })} className="w-5 h-5 rounded text-primary-500" /><span className="text-white">Contribuinte do ICMS</span></label><p className="text-xs text-dark-400 mt-1 ml-7">Marque se o produtor rural for contribuinte do ICMS (afeta emissão de NF-e)</p></div>
+                  </div>
+                )}
               </div>
             </div>
           )}
