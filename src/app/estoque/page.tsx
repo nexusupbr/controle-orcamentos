@@ -145,11 +145,11 @@ export default function EstoquePage() {
   
   // Formador de preço
   const [formadorData, setFormadorData] = useState({
-    custo: 0,
-    margem: 30,
-    impostos: 0,
-    frete: 0,
-    outros: 0
+    custo: '',
+    margem: '30',
+    impostos: '',
+    frete: '',
+    outros: ''
   })
 
   useEffect(() => {
@@ -606,7 +606,11 @@ export default function EstoquePage() {
 
   // Formador de preço
   const calcularPrecoVenda = () => {
-    const { custo, margem, impostos, frete, outros } = formadorData
+    const custo = parseFloat(formadorData.custo) || 0
+    const margem = parseFloat(formadorData.margem) || 0
+    const impostos = parseFloat(formadorData.impostos) || 0
+    const frete = parseFloat(formadorData.frete) || 0
+    const outros = parseFloat(formadorData.outros) || 0
     // Calcular valores percentuais sobre o custo
     const valorImpostos = custo * (impostos / 100)
     const valorFrete = custo * (frete / 100)
@@ -618,11 +622,13 @@ export default function EstoquePage() {
 
   const aplicarFormadorPreco = () => {
     const { precoVenda } = calcularPrecoVenda()
+    const custo = parseFloat(formadorData.custo) || 0
+    const margem = parseFloat(formadorData.margem) || 0
     setFormData({
       ...formData,
-      valor_custo: formadorData.custo,
+      valor_custo: custo,
       valor_venda: Number(precoVenda.toFixed(2)),
-      margem_lucro: formadorData.margem
+      margem_lucro: margem
     })
     setIsFormadorPrecoOpen(false)
   }
@@ -1134,7 +1140,7 @@ export default function EstoquePage() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  setFormadorData({ ...formadorData, custo: formData.valor_custo })
+                  setFormadorData({ ...formadorData, custo: String(formData.valor_custo || '') })
                   setIsFormadorPrecoOpen(true)
                 }}
                 leftIcon={<DollarSign className="w-4 h-4" />}
@@ -1376,7 +1382,7 @@ export default function EstoquePage() {
               type="number"
               step="0.01"
               value={formadorData.custo}
-              onChange={(e) => setFormadorData({ ...formadorData, custo: Number(e.target.value) })}
+              onChange={(e) => setFormadorData({ ...formadorData, custo: e.target.value })}
               className="input w-full"
               placeholder="0,00"
             />
@@ -1390,7 +1396,7 @@ export default function EstoquePage() {
                   type="number"
                   step="0.1"
                   value={formadorData.impostos}
-                  onChange={(e) => setFormadorData({ ...formadorData, impostos: Number(e.target.value) })}
+                  onChange={(e) => setFormadorData({ ...formadorData, impostos: e.target.value })}
                   className="input w-full pr-8"
                   placeholder="0"
                 />
@@ -1404,7 +1410,7 @@ export default function EstoquePage() {
                   type="number"
                   step="0.1"
                   value={formadorData.frete}
-                  onChange={(e) => setFormadorData({ ...formadorData, frete: Number(e.target.value) })}
+                  onChange={(e) => setFormadorData({ ...formadorData, frete: e.target.value })}
                   className="input w-full pr-8"
                   placeholder="0"
                 />
@@ -1418,7 +1424,7 @@ export default function EstoquePage() {
                   type="number"
                   step="0.1"
                   value={formadorData.outros}
-                  onChange={(e) => setFormadorData({ ...formadorData, outros: Number(e.target.value) })}
+                  onChange={(e) => setFormadorData({ ...formadorData, outros: e.target.value })}
                   className="input w-full pr-8"
                   placeholder="0"
                 />
@@ -1434,7 +1440,7 @@ export default function EstoquePage() {
                 type="number"
                 step="0.1"
                 value={formadorData.margem}
-                onChange={(e) => setFormadorData({ ...formadorData, margem: Number(e.target.value) })}
+                onChange={(e) => setFormadorData({ ...formadorData, margem: e.target.value })}
                 className="input w-full pr-8"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400">%</span>
@@ -1442,25 +1448,25 @@ export default function EstoquePage() {
           </div>
           
           <div className="border-t border-dark-700 pt-4 space-y-2">
-            {formadorData.custo > 0 && (
+            {parseFloat(formadorData.custo) > 0 && (
               <>
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-dark-400">Custo Base:</span>
-                  <span className="text-white">{formatCurrency(formadorData.custo)}</span>
+                  <span className="text-white">{formatCurrency(parseFloat(formadorData.custo) || 0)}</span>
                 </div>
-                {formadorData.impostos > 0 && (
+                {parseFloat(formadorData.impostos) > 0 && (
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-dark-400">+ Impostos ({formadorData.impostos}%):</span>
                     <span className="text-white">{formatCurrency(calcularPrecoVenda().valorImpostos)}</span>
                   </div>
                 )}
-                {formadorData.frete > 0 && (
+                {parseFloat(formadorData.frete) > 0 && (
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-dark-400">+ Frete ({formadorData.frete}%):</span>
                     <span className="text-white">{formatCurrency(calcularPrecoVenda().valorFrete)}</span>
                   </div>
                 )}
-                {formadorData.outros > 0 && (
+                {parseFloat(formadorData.outros) > 0 && (
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-dark-400">+ Outros ({formadorData.outros}%):</span>
                     <span className="text-white">{formatCurrency(calcularPrecoVenda().valorOutros)}</span>
