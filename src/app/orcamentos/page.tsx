@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Edit2, Trash2, Search, X, Check, Printer, Download } from 'lucide-react'
+import { Plus, Edit2, Trash2, Search, X, Check, Printer, Download, DollarSign, Calendar } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, Select } from '@/components/ui/Form'
 import { Modal } from '@/components/ui/Modal'
@@ -34,6 +34,8 @@ const initialFormData: OrcamentoInput = {
   status: 'Fechado',
   parcelado: false,
   parcelas: 1,
+  valores_parcelas: null,
+  datas_parcelas: null,
   observacoes: '',
   nota_fiscal: false,
 }
@@ -112,6 +114,8 @@ export default function OrcamentosPage() {
         status: orcamento.status,
         parcelado: orcamento.parcelado || false,
         parcelas: orcamento.parcelas || 1,
+        valores_parcelas: orcamento.valores_parcelas || null,
+        datas_parcelas: orcamento.datas_parcelas || null,
         observacoes: orcamento.observacoes || '',
         nota_fiscal: orcamento.nota_fiscal || false,
       })
@@ -140,6 +144,73 @@ export default function OrcamentosPage() {
       data: novaData,
       mes: getMesAno(novaData),
     })
+  }
+
+  // Calcula o valor base de cada parcela
+  const calcularValorParcela = () => {
+    const valorTotal = (formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0)
+    return valorTotal / formData.parcelas
+  }
+
+  // Gera datas mensais a partir da data do orçamento
+  const gerarDatasParcelas = (numParcelas: number, dataBase?: string): string[] => {
+    const base = new Date((dataBase || formData.data) + 'T00:00:00')
+    const datas: string[] = []
+    for (let i = 0; i < numParcelas; i++) {
+      const novaData = new Date(base)
+      novaData.setMonth(novaData.getMonth() + i + 1) // Primeira parcela no mês seguinte
+      datas.push(novaData.toISOString().split('T')[0])
+    }
+    return datas
+  }
+
+  // Inicializa os valores das parcelas quando muda o número de parcelas
+  const handleParcelasChange = (numParcelas: number) => {
+    const valorTotal = (formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0)
+    const valorPorParcela = valorTotal / numParcelas
+    const novasValoresParcelas = Array(numParcelas).fill(valorPorParcela)
+    const novasDatasParcelas = gerarDatasParcelas(numParcelas)
+    
+    setFormData({ 
+      ...formData, 
+      parcelas: numParcelas,
+      valores_parcelas: novasValoresParcelas,
+      datas_parcelas: novasDatasParcelas
+    })
+  }
+
+  // Atualiza o valor de uma parcela específica
+  const handleValorParcelaChange = (index: number, valor: number) => {
+    const novasValoresParcelas = [...(formData.valores_parcelas || [])]
+    novasValoresParcelas[index] = valor
+    setFormData({ ...formData, valores_parcelas: novasValoresParcelas })
+  }
+
+  // Atualiza a data de uma parcela específica
+  const handleDataParcelaChange = (index: number, data: string) => {
+    const novasDatasParcelas = [...(formData.datas_parcelas || [])]
+    novasDatasParcelas[index] = data
+    setFormData({ ...formData, datas_parcelas: novasDatasParcelas })
+  }
+
+  // Recalcula todas as parcelas igualmente
+  const recalcularParcelasIguais = () => {
+    const valorTotal = (formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0)
+    const valorPorParcela = valorTotal / formData.parcelas
+    const novasValoresParcelas = Array(formData.parcelas).fill(valorPorParcela)
+    setFormData({ ...formData, valores_parcelas: novasValoresParcelas })
+  }
+
+  // Recalcula todas as datas mensalmente
+  const recalcularDatasMensais = () => {
+    const novasDatasParcelas = gerarDatasParcelas(formData.parcelas)
+    setFormData({ ...formData, datas_parcelas: novasDatasParcelas })
+  }
+
+  // Calcula o total das parcelas personalizadas
+  const getTotalParcelas = () => {
+    if (!formData.valores_parcelas) return 0
+    return formData.valores_parcelas.reduce((acc, val) => acc + (val || 0), 0)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -414,9 +485,35 @@ export default function OrcamentosPage() {
                       </Badge>
                     </td>
                     <td>
-                      <span className={`text-sm ${orc.parcelado ? 'text-amber-400' : 'text-dark-400'}`}>
-                        {orc.parcelado ? `${orc.parcelas}x` : 'À vista'}
-                      </span>
+                      <div className="relative group/parcela">
+                        <span className={`text-sm cursor-help ${orc.parcelado ? 'text-amber-400' : 'text-dark-400'}`}>
+                          {orc.parcelado ? `${orc.parcelas}x` : 'À vista'}
+                        </span>
+                        {orc.parcelado && orc.valores_parcelas && orc.valores_parcelas.length > 0 && (
+                          <div className="absolute bottom-full left-0 mb-2 hidden group-hover/parcela:block z-50">
+                            <div className="bg-dark-900 border border-dark-600 rounded-lg p-3 shadow-xl min-w-[250px]">
+                              <p className="text-xs text-dark-400 mb-2 font-medium">Detalhes das Parcelas:</p>
+                              <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                                {orc.valores_parcelas.map((valor, idx) => (
+                                  <div key={idx} className="flex justify-between items-center text-xs gap-3">
+                                    <span className="text-primary-400 font-medium">{idx + 1}ª</span>
+                                    <span className="text-dark-400 flex-1">
+                                      {orc.datas_parcelas?.[idx] ? formatDate(orc.datas_parcelas[idx]) : '-'}
+                                    </span>
+                                    <span className="text-amber-400 font-medium">{formatCurrency(valor)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="border-t border-dark-600 mt-2 pt-2 flex justify-between text-xs">
+                                <span className="text-dark-300">Total:</span>
+                                <span className="text-white font-bold">
+                                  {formatCurrency(orc.valores_parcelas.reduce((a, b) => a + b, 0))}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <span className={`text-sm font-medium ${orc.nota_fiscal ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -575,7 +672,7 @@ export default function OrcamentosPage() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setFormData({ ...formData, parcelado: false, parcelas: 1 })}
+                  onClick={() => setFormData({ ...formData, parcelado: false, parcelas: 1, valores_parcelas: null, datas_parcelas: null })}
                   className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                     !formData.parcelado
                       ? 'bg-primary-500/20 text-primary-400 border-2 border-primary-500'
@@ -586,7 +683,20 @@ export default function OrcamentosPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setFormData({ ...formData, parcelado: true, parcelas: formData.parcelas || 2 })}
+                  onClick={() => {
+                    const numParcelas = formData.parcelas >= 2 ? formData.parcelas : 2
+                    const valorTotal = (formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0)
+                    const valorPorParcela = valorTotal / numParcelas
+                    const valoresParcelas = Array(numParcelas).fill(valorPorParcela)
+                    const datasParcelas = gerarDatasParcelas(numParcelas)
+                    setFormData({ 
+                      ...formData, 
+                      parcelado: true, 
+                      parcelas: numParcelas,
+                      valores_parcelas: valoresParcelas,
+                      datas_parcelas: datasParcelas
+                    })
+                  }}
                   className={`flex-1 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                     formData.parcelado
                       ? 'bg-primary-500/20 text-primary-400 border-2 border-primary-500'
@@ -601,26 +711,122 @@ export default function OrcamentosPage() {
 
           {/* Número de parcelas - só aparece se parcelado */}
           {formData.parcelado && (
-            <div className="animate-fade-in">
-              <label className="block text-sm font-medium text-dark-300 mb-2">
-                Número de Parcelas
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min="2"
-                  max="24"
-                  value={formData.parcelas}
-                  onChange={(e) => setFormData({ ...formData, parcelas: parseInt(e.target.value) })}
-                  className="flex-1 h-2 bg-dark-700 rounded-lg appearance-none cursor-pointer accent-primary-500"
-                />
-                <span className="w-16 text-center py-2 px-3 rounded-lg bg-dark-800 text-primary-400 font-bold text-lg">
-                  {formData.parcelas}x
-                </span>
+            <div className="animate-fade-in space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-dark-300 mb-2">
+                  Número de Parcelas
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="2"
+                    max="24"
+                    value={formData.parcelas}
+                    onChange={(e) => handleParcelasChange(parseInt(e.target.value))}
+                    className="flex-1 h-2 bg-dark-700 rounded-lg appearance-none cursor-pointer accent-primary-500"
+                  />
+                  <span className="w-16 text-center py-2 px-3 rounded-lg bg-dark-800 text-primary-400 font-bold text-lg">
+                    {formData.parcelas}x
+                  </span>
+                </div>
               </div>
-              <p className="text-xs text-dark-500 mt-2">
-                Valor por parcela: {formatCurrency((formData.valor_fechado || formData.valor_proposto) / formData.parcelas)}
-              </p>
+
+              {/* Valores e Datas individuais de cada parcela */}
+              <div className="bg-dark-800/50 rounded-xl p-4 border border-dark-700">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <h4 className="text-sm font-medium text-dark-300 flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-primary-400" />
+                    Detalhes das Parcelas
+                  </h4>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={recalcularDatasMensais}
+                      className="text-xs text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1"
+                    >
+                      <Calendar className="w-3 h-3" />
+                      Datas mensais
+                    </button>
+                    <button
+                      type="button"
+                      onClick={recalcularParcelasIguais}
+                      className="text-xs text-primary-400 hover:text-primary-300 transition-colors flex items-center gap-1"
+                    >
+                      <DollarSign className="w-3 h-3" />
+                      Dividir igualmente
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {Array.from({ length: formData.parcelas }).map((_, index) => (
+                    <div key={index} className="grid grid-cols-12 gap-2 items-center bg-dark-900/50 rounded-lg p-2">
+                      <div className="col-span-2 md:col-span-1">
+                        <span className="text-xs font-medium text-primary-400 bg-primary-500/20 px-2 py-1 rounded-full">
+                          {index + 1}ª
+                        </span>
+                      </div>
+                      <div className="col-span-5 md:col-span-4">
+                        <div className="relative">
+                          <Calendar className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-dark-500" />
+                          <input
+                            type="date"
+                            className="input pl-7 py-1.5 text-sm"
+                            value={formData.datas_parcelas?.[index] || ''}
+                            onChange={(e) => handleDataParcelaChange(index, e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="col-span-5 md:col-span-4">
+                        <div className="relative">
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-dark-500 text-xs">R$</span>
+                          <input
+                            type="text"
+                            className="input pl-8 py-1.5 text-sm"
+                            placeholder="0,00"
+                            value={formData.valores_parcelas?.[index] ? formatNumberBR(formData.valores_parcelas[index]) : ''}
+                            onChange={(e) => {
+                              const masked = maskCurrency(e.target.value)
+                              const numValue = parseNumberBR(masked)
+                              handleValorParcelaChange(index, numValue)
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="hidden md:block col-span-3 text-right">
+                        <span className="text-xs text-dark-400">
+                          {formData.datas_parcelas?.[index] ? formatDate(formData.datas_parcelas[index]) : ''}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Resumo */}
+                <div className="mt-4 pt-3 border-t border-dark-700 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-dark-400">
+                    <span>Valor a parcelar: </span>
+                    <span className="text-white font-medium">
+                      {formatCurrency((formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0))}
+                    </span>
+                  </div>
+                  <div className="text-xs">
+                    <span className="text-dark-400">Total das parcelas: </span>
+                    <span className={`font-medium ${
+                      Math.abs(getTotalParcelas() - ((formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0))) < 0.01
+                        ? 'text-green-400'
+                        : 'text-yellow-400'
+                    }`}>
+                      {formatCurrency(getTotalParcelas())}
+                    </span>
+                    {Math.abs(getTotalParcelas() - ((formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0))) >= 0.01 && (
+                      <span className="text-yellow-400 ml-2">
+                        (diferença: {formatCurrency(getTotalParcelas() - ((formData.valor_fechado || formData.valor_proposto) - (formData.entrada || 0)))})
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

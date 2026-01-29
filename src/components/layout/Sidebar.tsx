@@ -22,39 +22,189 @@ import {
   PieChart,
   Receipt,
   FileCheck,
-  ClipboardList
+  ClipboardList,
+  ChevronDown,
+  ChevronRight,
+  Briefcase,
+  Calculator,
+  FolderOpen,
+  Cog,
+  Tags,
+  LucideIcon
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { cn, getAssetPath } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAdminAuth } from '@/contexts/AdminAuthContext'
 
-// Navegação para Admin (área administrativa)
-const adminNavigation = [
-  { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
-  { name: 'Orçamentos', href: '/orcamentos', icon: FileText },
-  { name: 'Orçamentos (Detalhado)', href: '/os', icon: ClipboardList },
-  { name: 'Obras', href: '/obras', icon: HardHat },
-  { name: 'Vendas', href: '/vendas', icon: Receipt },
-  { name: 'Notas Fiscais', href: '/notas-fiscais', icon: FileCheck },
-  { name: 'Estoque', href: '/estoque', icon: Package },
-  { name: 'Compras', href: '/compras', icon: ShoppingCart },
-  { name: 'Clientes', href: '/clientes', icon: Users },
-  { name: 'Financeiro', href: '/financeiro', icon: Wallet },
-  { name: 'Caixa', href: '/caixa', icon: DollarSign },
-  { name: 'Relatórios', href: '/relatorios', icon: PieChart },
-  { name: 'Materiais', href: '/materiais', icon: Package },
-  { name: 'Resumo', href: '/resumo', icon: BarChart3 },
-  { name: 'Configurações', href: '/configuracoes', icon: Settings },
+// Tipo para item de navegação
+interface NavItem {
+  name: string
+  href: string
+  icon: LucideIcon
+}
+
+// Tipo para grupo de navegação (com submenu)
+interface NavGroup {
+  name: string
+  icon: LucideIcon
+  items: NavItem[]
+}
+
+// Navegação reorganizada com submenus
+const adminNavigationGroups: NavGroup[] = [
+  {
+    name: 'Operação',
+    icon: Briefcase,
+    items: [
+      { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
+      { name: 'Orçamentos', href: '/orcamentos', icon: FileText },
+      { name: 'Materiais', href: '/materiais', icon: Package },
+      { name: 'Obras', href: '/obras', icon: HardHat },
+    ]
+  },
+  {
+    name: 'Comercial',
+    icon: Receipt,
+    items: [
+      { name: 'Vendas', href: '/vendas', icon: Receipt },
+      { name: 'OS (Detalhado)', href: '/os', icon: ClipboardList },
+    ]
+  },
+  {
+    name: 'Financeiro',
+    icon: Wallet,
+    items: [
+      { name: 'Financeiro', href: '/financeiro', icon: Wallet },
+      { name: 'Caixa', href: '/caixa', icon: DollarSign },
+    ]
+  },
+  {
+    name: 'Cadastros',
+    icon: FolderOpen,
+    items: [
+      { name: 'Clientes/Fornecedores', href: '/clientes', icon: Users },
+      { name: 'Estoque', href: '/estoque', icon: Package },
+      { name: 'Categorias Financeiras', href: '/categorias-financeiras', icon: Tags },
+    ]
+  },
+  {
+    name: 'Fiscal',
+    icon: FileCheck,
+    items: [
+      { name: 'Notas Fiscais', href: '/notas-fiscais', icon: FileCheck },
+      { name: 'Compras (XML)', href: '/compras', icon: ShoppingCart },
+    ]
+  },
+  {
+    name: 'Relatórios',
+    icon: PieChart,
+    items: [
+      { name: 'Relatórios', href: '/relatorios', icon: PieChart },
+      { name: 'Resumo', href: '/resumo', icon: BarChart3 },
+    ]
+  },
+  {
+    name: 'Configurações',
+    icon: Cog,
+    items: [
+      { name: 'Geral', href: '/configuracoes', icon: Settings },
+      { name: 'Fiscal', href: '/configuracoes/fiscal', icon: Calculator },
+    ]
+  },
 ]
 
 // Navegação simples (padrão para todos)
-const simpleNavigation = [
+const simpleNavigation: NavItem[] = [
   { name: 'Obras', href: '/', icon: HardHat },
 ]
 
 // Rotas administrativas
-const adminRoutes = ['/admin', '/orcamentos', '/os', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais']
+const adminRoutes = ['/admin', '/orcamentos', '/os', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais', '/categorias-financeiras']
+
+// Componente de grupo de navegação com submenu
+function NavGroupComponent({ 
+  group, 
+  isOpen, 
+  onToggle, 
+  pathname,
+  onMobileClose
+}: { 
+  group: NavGroup
+  isOpen: boolean
+  onToggle: () => void
+  pathname: string
+  onMobileClose: () => void
+}) {
+  // Verifica se algum item do grupo está ativo
+  const hasActiveItem = group.items.some(item => 
+    pathname === item.href || pathname.startsWith(item.href + '/')
+  )
+
+  return (
+    <div className="mb-1">
+      {/* Cabeçalho do grupo (clicável para expandir/colapsar) */}
+      <button
+        onClick={onToggle}
+        className={cn(
+          "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
+          hasActiveItem
+            ? "bg-primary-500/10 text-primary-400"
+            : "text-dark-400 hover:text-white hover:bg-dark-800/50"
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <group.icon className={cn(
+            "w-5 h-5",
+            hasActiveItem ? "text-primary-400" : "text-dark-500"
+          )} />
+          <span>{group.name}</span>
+        </div>
+        {isOpen ? (
+          <ChevronDown className="w-4 h-4 text-dark-500" />
+        ) : (
+          <ChevronRight className="w-4 h-4 text-dark-500" />
+        )}
+      </button>
+
+      {/* Itens do submenu */}
+      <div className={cn(
+        "overflow-hidden transition-all duration-200",
+        isOpen ? "max-h-96 opacity-100 mt-1" : "max-h-0 opacity-0"
+      )}>
+        <div className="pl-4 space-y-0.5">
+          {group.items.map((item) => {
+            const isActive = pathname === item.href || 
+              (item.href !== '/admin' && pathname.startsWith(item.href + '/'))
+            
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onMobileClose}
+                className={cn(
+                  "flex items-center gap-3 px-4 py-2 rounded-lg text-sm transition-all duration-200 group",
+                  isActive 
+                    ? "bg-primary-500/20 text-primary-400 border-l-2 border-primary-400" 
+                    : "text-dark-400 hover:text-white hover:bg-dark-800/60 border-l-2 border-transparent"
+                )}
+              >
+                <item.icon className={cn(
+                  "w-4 h-4 transition-transform duration-200 group-hover:scale-110",
+                  isActive ? "text-primary-400" : "text-dark-500 group-hover:text-primary-400"
+                )} />
+                <span>{item.name}</span>
+                {isActive && (
+                  <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse" />
+                )}
+              </Link>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -62,12 +212,39 @@ export function Sidebar() {
   const { usuario, logout, authEnabled } = useAuth()
   const { isAuthenticated: isAdminAuthenticated, logout: adminLogout, email: adminEmail } = useAdminAuth()
   const [isMobileOpen, setIsMobileOpen] = useState(false)
+  
+  // Estado para controlar quais grupos estão abertos (usando array para compatibilidade)
+  const [openGroups, setOpenGroups] = useState<string[]>([])
 
   // Verifica se está na área administrativa
   const isInAdminArea = adminRoutes.some(route => pathname.startsWith(route) && route !== '/')
   
-  // Seleciona a navegação baseada na área
-  const navigation = isInAdminArea ? adminNavigation : simpleNavigation
+  // Auto-expandir o grupo que contém a rota ativa
+  useEffect(() => {
+    if (isInAdminArea) {
+      const activeGroup = adminNavigationGroups.find(group =>
+        group.items.some(item => pathname === item.href || pathname.startsWith(item.href + '/'))
+      )
+      if (activeGroup) {
+        setOpenGroups(prev => {
+          if (!prev.includes(activeGroup.name)) {
+            return [...prev, activeGroup.name]
+          }
+          return prev
+        })
+      }
+    }
+  }, [pathname, isInAdminArea])
+
+  const toggleGroup = (groupName: string) => {
+    setOpenGroups(prev => {
+      if (prev.includes(groupName)) {
+        return prev.filter(g => g !== groupName)
+      } else {
+        return [...prev, groupName]
+      }
+    })
+  }
 
   const handleLogout = () => {
     logout()
@@ -80,7 +257,6 @@ export function Sidebar() {
   }
 
   const goToAdmin = () => {
-    // Sempre redireciona para login administrativo
     if (isAdminAuthenticated) {
       router.push('/admin')
     } else {
@@ -91,6 +267,8 @@ export function Sidebar() {
   const goToObras = () => {
     router.push('/')
   }
+
+  const closeMobile = () => setIsMobileOpen(false)
 
   return (
     <>
@@ -133,14 +311,14 @@ export function Sidebar() {
                 <div className="absolute -top-1 -right-1 w-3 h-3 bg-primary-400 rounded-full animate-pulse" />
               </div>
               <div>
-                <h1 className="font-heading font-bold text-lg text-white">Controle</h1>
-                <p className="text-xs text-primary-400 font-medium">Orçamentos</p>
+                <h1 className="font-heading font-bold text-lg text-white">Irriga</h1>
+                <p className="text-xs text-primary-400 font-medium">Centro Oeste</p>
               </div>
             </Link>
           </div>
 
           {/* Navigation */}
-          <nav className="flex-1 p-4 space-y-2 overflow-y-auto scrollbar-thin">
+          <nav className="flex-1 p-4 overflow-y-auto scrollbar-thin">
             {/* Voltar para Obras (se estiver na área admin) */}
             {isInAdminArea && (
               <button
@@ -152,35 +330,54 @@ export function Sidebar() {
               </button>
             )}
 
-            <p className="px-3 text-xs font-semibold text-dark-500 uppercase tracking-wider mb-4">
-              {isInAdminArea ? 'Área Administrativa' : 'Menu Principal'}
+            <p className="px-3 text-xs font-semibold text-dark-500 uppercase tracking-wider mb-3">
+              {isInAdminArea ? 'Menu Administrativo' : 'Menu Principal'}
             </p>
             
-            {navigation.map((item) => {
-              const isActive = pathname === item.href
-              return (
-                <Link
-                  key={item.name}
-                  href={item.href}
-                  onClick={() => setIsMobileOpen(false)}
-                  className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 group",
-                    isActive 
-                      ? "bg-gradient-to-r from-primary-500/20 to-primary-600/10 text-primary-400 border border-primary-500/30 shadow-glow" 
-                      : "text-dark-400 hover:text-white hover:bg-dark-800/80"
-                  )}
-                >
-                  <item.icon className={cn(
-                    "w-5 h-5 transition-transform duration-200 group-hover:scale-110",
-                    isActive ? "text-primary-400" : "text-dark-500 group-hover:text-primary-400"
-                  )} />
-                  <span>{item.name}</span>
-                  {isActive && (
-                    <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse" />
-                  )}
-                </Link>
-              )
-            })}
+            {isInAdminArea ? (
+              // Navegação com submenus para área admin
+              <div className="space-y-1">
+                {adminNavigationGroups.map((group) => (
+                  <NavGroupComponent
+                    key={group.name}
+                    group={group}
+                    isOpen={openGroups.includes(group.name)}
+                    onToggle={() => toggleGroup(group.name)}
+                    pathname={pathname}
+                    onMobileClose={closeMobile}
+                  />
+                ))}
+              </div>
+            ) : (
+              // Navegação simples
+              <div className="space-y-2">
+                {simpleNavigation.map((item) => {
+                  const isActive = pathname === item.href
+                  return (
+                    <Link
+                      key={item.name}
+                      href={item.href}
+                      onClick={closeMobile}
+                      className={cn(
+                        "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 group",
+                        isActive 
+                          ? "bg-gradient-to-r from-primary-500/20 to-primary-600/10 text-primary-400 border border-primary-500/30 shadow-glow" 
+                          : "text-dark-400 hover:text-white hover:bg-dark-800/80"
+                      )}
+                    >
+                      <item.icon className={cn(
+                        "w-5 h-5 transition-transform duration-200 group-hover:scale-110",
+                        isActive ? "text-primary-400" : "text-dark-500 group-hover:text-primary-400"
+                      )} />
+                      <span>{item.name}</span>
+                      {isActive && (
+                        <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse" />
+                      )}
+                    </Link>
+                  )
+                })}
+              </div>
+            )}
 
             {/* Botão Área Administrativa (somente quando não está na área admin) */}
             {!isInAdminArea && (

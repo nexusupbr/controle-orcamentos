@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
+import { ClienteDetailModal, ProdutoDetailModal } from '@/components/ui/DetailModals'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import {
   OrdemServico, OSServico, OSProduto, Cliente, Produto,
@@ -66,6 +67,15 @@ export default function OSPage() {
   const [produtoSearch, setProdutoSearch] = useState('')
   const [showProdutoDropdown, setShowProdutoDropdown] = useState(false)
   const [selectedProdutoIndex, setSelectedProdutoIndex] = useState<number | null>(null)
+
+  // Modais de Detalhes
+  const [clienteModalOpen, setClienteModalOpen] = useState(false)
+  const [produtoModalOpen, setProdutoModalOpen] = useState(false)
+  const [selectedClienteId, setSelectedClienteId] = useState<number | null>(null)
+  const [selectedProdutoId, setSelectedProdutoId] = useState<number | null>(null)
+
+  // Alerta de estoque zerado
+  const [alertaEstoqueZerado, setAlertaEstoqueZerado] = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
@@ -477,6 +487,13 @@ export default function OSPage() {
   const selectProduto = (produto: Produto) => {
     if (selectedProdutoIndex === null) return
     
+    // Verificar se o estoque está zerado e exibir alerta
+    if ((produto.quantidade_estoque ?? 0) <= 0) {
+      setAlertaEstoqueZerado(`Atenção: O produto "${produto.nome}" está com estoque zerado!`)
+      // Limpar o alerta após 5 segundos
+      setTimeout(() => setAlertaEstoqueZerado(null), 5000)
+    }
+    
     const newProdutos = [...produtosOS]
     newProdutos[selectedProdutoIndex] = {
       ...newProdutos[selectedProdutoIndex],
@@ -706,7 +723,21 @@ export default function OSPage() {
                       <span className="font-mono font-bold text-primary-400">#{os.numero}</span>
                     </td>
                     <td className="text-dark-300">{formatDate(os.data_os)}</td>
-                    <td className="text-white font-medium">{os.cliente_nome}</td>
+                    <td>
+                      {os.cliente_id ? (
+                        <button 
+                          onClick={() => {
+                            setSelectedClienteId(os.cliente_id)
+                            setClienteModalOpen(true)
+                          }}
+                          className="text-primary-400 font-medium hover:text-primary-300 transition-colors"
+                        >
+                          {os.cliente_nome}
+                        </button>
+                      ) : (
+                        <span className="text-white font-medium">{os.cliente_nome}</span>
+                      )}
+                    </td>
                     <td className="text-dark-300">{formatCurrency(os.total_servicos)}</td>
                     <td className="text-dark-300">{formatCurrency(os.total_produtos)}</td>
                     <td className="text-white font-bold">{formatCurrency(os.valor_total)}</td>
@@ -943,6 +974,21 @@ export default function OSPage() {
                 <Plus className="w-4 h-4" />
               </Button>
             </div>
+
+            {/* Alerta de Estoque Zerado */}
+            {alertaEstoqueZerado && (
+              <div className="flex items-center gap-3 p-3 bg-yellow-500/20 border border-yellow-500/50 rounded-lg animate-pulse">
+                <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+                <span className="text-yellow-300 text-sm font-medium">{alertaEstoqueZerado}</span>
+                <button 
+                  type="button"
+                  onClick={() => setAlertaEstoqueZerado(null)}
+                  className="ml-auto text-yellow-400 hover:text-yellow-200 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             
             {produtosOS.length > 0 && (
               <div className="space-y-2">
@@ -998,11 +1044,16 @@ export default function OSPage() {
                                 onClick={() => selectProduto(p)}
                                 className="w-full p-2 text-left hover:bg-dark-700 text-white text-sm border-b border-dark-700 last:border-0"
                               >
-                                <div className="flex justify-between">
-                                  <span>{p.nome}</span>
-                                  <span className="text-green-400">{formatCurrency(p.valor_venda)}</span>
+                                <div className="flex justify-between items-center">
+                                  <span className="truncate flex-1">{p.nome}</span>
+                                  <span className="text-green-400 ml-2">{formatCurrency(p.valor_venda)}</span>
                                 </div>
-                                <div className="text-xs text-dark-400">{p.codigo} - {p.unidade}</div>
+                                <div className="flex justify-between items-center mt-1">
+                                  <span className="text-xs text-dark-400">{p.codigo} - {p.unidade}</span>
+                                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${(p.quantidade_estoque ?? 0) <= 0 ? 'bg-red-500/20 text-red-400' : (p.quantidade_estoque ?? 0) <= 5 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
+                                    Estoque: {p.quantidade_estoque ?? 0}
+                                  </span>
+                                </div>
                               </button>
                             ))
                           )}
@@ -1108,6 +1159,18 @@ export default function OSPage() {
           </div>
         </form>
       </Modal>
+
+      {/* Modais de Detalhes */}
+      <ClienteDetailModal 
+        isOpen={clienteModalOpen} 
+        onClose={() => setClienteModalOpen(false)} 
+        clienteId={selectedClienteId} 
+      />
+      <ProdutoDetailModal 
+        isOpen={produtoModalOpen} 
+        onClose={() => setProdutoModalOpen(false)} 
+        produtoId={selectedProdutoId} 
+      />
     </div>
   )
 }

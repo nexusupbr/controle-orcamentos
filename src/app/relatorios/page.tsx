@@ -81,8 +81,11 @@ export default function RelatoriosPage() {
   // Filtrar por período
   const filterByPeriod = (data: any[], dateField: string) => {
     return data.filter(item => {
-      const itemDate = new Date(item[dateField])
-      return itemDate >= new Date(periodoInicio) && itemDate <= new Date(periodoFim)
+      const dateValue = item[dateField] || item.data || item.data_lancamento || item.data_venda
+      if (!dateValue) return false
+      const itemDate = new Date(dateValue)
+      if (isNaN(itemDate.getTime())) return false
+      return itemDate >= new Date(periodoInicio) && itemDate <= new Date(periodoFim + 'T23:59:59')
     })
   }
 
@@ -116,19 +119,21 @@ export default function RelatoriosPage() {
 
   // Dados para Relatório de Caixa
   const getDadosCaixa = () => {
-    const lancsFiltrados = filterByPeriod(lancamentos, 'data')
+    const lancsFiltrados = filterByPeriod(lancamentos, 'data_lancamento')
     
-    // Entradas e Saídas
-    const entradas = lancsFiltrados.filter(l => l.tipo === 'entrada').reduce((acc, l) => acc + l.valor, 0)
-    const saidas = lancsFiltrados.filter(l => l.tipo === 'saida').reduce((acc, l) => acc + l.valor, 0)
+    // Entradas e Saídas (tipos: receita/despesa ou entrada/saida)
+    const entradas = lancsFiltrados.filter(l => l.tipo === 'receita' || l.tipo === 'entrada').reduce((acc, l) => acc + (l.valor || 0), 0)
+    const saidas = lancsFiltrados.filter(l => l.tipo === 'despesa' || l.tipo === 'saida').reduce((acc, l) => acc + (l.valor || 0), 0)
     
     // Por dia
     const porDia: { [key: string]: { entradas: number, saidas: number } } = {}
     lancsFiltrados.forEach(l => {
-      const dia = l.data.split('T')[0]
+      const dataStr = l.data_lancamento || l.data || ''
+      if (!dataStr) return
+      const dia = dataStr.split('T')[0]
       if (!porDia[dia]) porDia[dia] = { entradas: 0, saidas: 0 }
-      if (l.tipo === 'entrada') porDia[dia].entradas += l.valor
-      else porDia[dia].saidas += l.valor
+      if (l.tipo === 'receita' || l.tipo === 'entrada') porDia[dia].entradas += (l.valor || 0)
+      else porDia[dia].saidas += (l.valor || 0)
     })
     
     const dadosDiarios = Object.entries(porDia).map(([data, valores]) => ({
@@ -145,16 +150,18 @@ export default function RelatoriosPage() {
       cor: cat.cor,
       valor: lancsFiltrados
         .filter(l => l.categoria_id === cat.id)
-        .reduce((acc, l) => acc + l.valor, 0)
+        .reduce((acc, l) => acc + (l.valor || 0), 0)
     })).filter(c => c.valor > 0)
     
     // Por mês
     const porMes: { [key: string]: { entradas: number, saidas: number } } = {}
     lancsFiltrados.forEach(l => {
-      const mes = l.data.slice(0, 7) // YYYY-MM
+      const dataStr = l.data_lancamento || l.data || ''
+      if (!dataStr) return
+      const mes = dataStr.slice(0, 7) // YYYY-MM
       if (!porMes[mes]) porMes[mes] = { entradas: 0, saidas: 0 }
-      if (l.tipo === 'entrada') porMes[mes].entradas += l.valor
-      else porMes[mes].saidas += l.valor
+      if (l.tipo === 'receita' || l.tipo === 'entrada') porMes[mes].entradas += (l.valor || 0)
+      else porMes[mes].saidas += (l.valor || 0)
     })
     
     const dadosMensais = Object.entries(porMes).map(([mes, valores]) => ({
@@ -169,17 +176,27 @@ export default function RelatoriosPage() {
 
   // Dados para Relatório de Estoque
   const getDadosEstoque = () => {
-    const valorTotal = produtos.reduce((acc, p) => acc + (p.custo_unitario * p.quantidade_atual), 0)
-    const qtdTotal = produtos.reduce((acc, p) => acc + p.quantidade_atual, 0)
-    const estoqueMinimo = produtos.filter(p => p.quantidade_atual <= p.estoque_minimo).length
+    const valorTotal = produtos.reduce((acc, p) => {
+      const custo = p.valor_custo || p.custo_medio || p.custo_unitario || 0
+      const qtd = p.quantidade_estoque ?? p.quantidade_atual ?? 0
+      return acc + (custo * qtd)
+    }, 0)
+    const qtdTotal = produtos.reduce((acc, p) => acc + (p.quantidade_estoque ?? p.quantidade_atual ?? 0), 0)
+    const estoqueMinimo = produtos.filter(p => {
+      const qtd = p.quantidade_estoque ?? p.quantidade_atual ?? 0
+      const min = p.estoque_minimo ?? 0
+      return qtd > 0 && qtd <= min
+    }).length
     
     // Por categoria
     const porCategoria: { [key: string]: { qtd: number, valor: number } } = {}
     produtos.forEach(p => {
-      const catNome = p.categoria?.nome || 'Sem Categoria'
+      const catNome = p.categoria?.nome || p.classificacao_fiscal || 'Sem Categoria'
       if (!porCategoria[catNome]) porCategoria[catNome] = { qtd: 0, valor: 0 }
-      porCategoria[catNome].qtd += p.quantidade_atual
-      porCategoria[catNome].valor += p.custo_unitario * p.quantidade_atual
+      const custo = p.valor_custo || p.custo_medio || p.custo_unitario || 0
+      const qtd = p.quantidade_estoque ?? p.quantidade_atual ?? 0
+      porCategoria[catNome].qtd += qtd
+      porCategoria[catNome].valor += custo * qtd
     })
     
     const dadosCategorias = Object.entries(porCategoria).map(([nome, dados]) => ({
@@ -188,28 +205,30 @@ export default function RelatoriosPage() {
       valor: dados.valor
     }))
     
-    // Mais vendidos (simulado)
+    // Mais estoque
     const maisEstoque = [...produtos]
-      .sort((a, b) => b.quantidade_atual - a.quantidade_atual)
+      .sort((a, b) => (b.quantidade_estoque ?? b.quantidade_atual ?? 0) - (a.quantidade_estoque ?? a.quantidade_atual ?? 0))
       .slice(0, 10)
-      .map(p => ({ nome: p.nome, quantidade: p.quantidade_atual }))
+      .map(p => ({ nome: p.nome, quantidade: p.quantidade_estoque ?? p.quantidade_atual ?? 0 }))
     
     return { valorTotal, qtdTotal, estoqueMinimo, dadosCategorias, maisEstoque, totalProdutos: produtos.length }
   }
 
   // Dados para Relatório de Vendas
   const getDadosVendas = () => {
-    const vendasFiltradas = filterByPeriod(vendas, 'data')
-    const totalVendas = vendasFiltradas.reduce((acc, v) => acc + v.valor_total, 0)
+    const vendasFiltradas = filterByPeriod(vendas, 'data_venda')
+    const totalVendas = vendasFiltradas.reduce((acc, v) => acc + (v.valor_total || 0), 0)
     const qtdVendas = vendasFiltradas.length
     const ticketMedio = qtdVendas > 0 ? totalVendas / qtdVendas : 0
     
     // Por dia
     const porDia: { [key: string]: number } = {}
     vendasFiltradas.forEach(v => {
-      const dia = v.data.split('T')[0]
+      const dataStr = v.data_venda || v.data || ''
+      if (!dataStr) return
+      const dia = dataStr.split('T')[0]
       if (!porDia[dia]) porDia[dia] = 0
-      porDia[dia] += v.valor_total
+      porDia[dia] += (v.valor_total || 0)
     })
     
     const dadosDiarios = Object.entries(porDia).map(([data, valor]) => ({
@@ -222,7 +241,7 @@ export default function RelatoriosPage() {
     vendasFiltradas.forEach(v => {
       const forma = v.forma_pagamento || 'Outro'
       if (!porFormaPgto[forma]) porFormaPgto[forma] = 0
-      porFormaPgto[forma] += v.valor_total
+      porFormaPgto[forma] += (v.valor_total || 0)
     })
     
     const dadosFormaPgto = Object.entries(porFormaPgto).map(([nome, value]) => ({
@@ -235,13 +254,13 @@ export default function RelatoriosPage() {
 
   // Dados para Relatório de Contas
   const getDadosContas = () => {
-    const pagarPendente = contasPagar.filter(c => c.status === 'pendente').reduce((acc, c) => acc + c.valor, 0)
-    const pagarVencido = contasPagar.filter(c => c.status === 'vencido').reduce((acc, c) => acc + c.valor, 0)
-    const receberPendente = contasReceber.filter(c => c.status === 'pendente').reduce((acc, c) => acc + c.valor, 0)
-    const receberVencido = contasReceber.filter(c => c.status === 'vencido').reduce((acc, c) => acc + c.valor, 0)
+    const pagarPendente = contasPagar.filter(c => c.status === 'pendente').reduce((acc, c) => acc + (c.valor || 0), 0)
+    const pagarVencido = contasPagar.filter(c => c.status === 'vencido').reduce((acc, c) => acc + (c.valor || 0), 0)
+    const receberPendente = contasReceber.filter(c => c.status === 'pendente').reduce((acc, c) => acc + (c.valor || 0), 0)
+    const receberVencido = contasReceber.filter(c => c.status === 'vencido').reduce((acc, c) => acc + (c.valor || 0), 0)
     
     // Vencimentos próximos
-    const proximosVencimentos = [...contasPagar, ...contasReceber]
+    const proximosVencimentos = [...contasPagar.map(c => ({...c, tipo_conta: 'pagar'})), ...contasReceber.map(c => ({...c, tipo_conta: 'receber'}))]
       .filter(c => c.status === 'pendente')
       .sort((a, b) => new Date(a.data_vencimento).getTime() - new Date(b.data_vencimento).getTime())
       .slice(0, 10)
@@ -251,10 +270,10 @@ export default function RelatoriosPage() {
 
   // Dados para DRE
   const getDadosDRE = () => {
-    const lancsFiltrados = filterByPeriod(lancamentos, 'data')
+    const lancsFiltrados = filterByPeriod(lancamentos, 'data_lancamento')
     
-    const receitas = lancsFiltrados.filter(l => l.tipo === 'entrada').reduce((acc, l) => acc + l.valor, 0)
-    const despesas = lancsFiltrados.filter(l => l.tipo === 'saida').reduce((acc, l) => acc + l.valor, 0)
+    const receitas = lancsFiltrados.filter(l => l.tipo === 'receita' || l.tipo === 'entrada').reduce((acc, l) => acc + (l.valor || 0), 0)
+    const despesas = lancsFiltrados.filter(l => l.tipo === 'despesa' || l.tipo === 'saida').reduce((acc, l) => acc + (l.valor || 0), 0)
     
     // Despesas por categoria
     const despesasPorCategoria = categorias
@@ -262,8 +281,8 @@ export default function RelatoriosPage() {
       .map(cat => ({
         nome: cat.nome,
         valor: lancsFiltrados
-          .filter(l => l.tipo === 'saida' && l.categoria_id === cat.id)
-          .reduce((acc, l) => acc + l.valor, 0)
+          .filter(l => (l.tipo === 'despesa' || l.tipo === 'saida') && l.categoria_id === cat.id)
+          .reduce((acc, l) => acc + (l.valor || 0), 0)
       }))
       .filter(d => d.valor > 0)
       .sort((a, b) => b.valor - a.valor)
@@ -274,8 +293,8 @@ export default function RelatoriosPage() {
       .map(cat => ({
         nome: cat.nome,
         valor: lancsFiltrados
-          .filter(l => l.tipo === 'entrada' && l.categoria_id === cat.id)
-          .reduce((acc, l) => acc + l.valor, 0)
+          .filter(l => (l.tipo === 'receita' || l.tipo === 'entrada') && l.categoria_id === cat.id)
+          .reduce((acc, l) => acc + (l.valor || 0), 0)
       }))
       .filter(d => d.valor > 0)
       .sort((a, b) => b.valor - a.valor)
@@ -300,14 +319,16 @@ export default function RelatoriosPage() {
       case 'estoque':
         csv = 'Produto;Quantidade;Custo Unit.;Valor Total\n'
         produtos.forEach(p => {
-          csv += `${p.nome};${p.quantidade_atual};${p.custo_unitario.toFixed(2)};${(p.custo_unitario * p.quantidade_atual).toFixed(2)}\n`
+          const qtd = p.quantidade_estoque ?? p.quantidade_atual ?? 0
+          const custo = p.valor_custo || p.custo_medio || p.custo_unitario || 0
+          csv += `${p.nome};${qtd};${custo.toFixed(2)};${(custo * qtd).toFixed(2)}\n`
         })
         filename = 'relatorio_estoque'
         break
       case 'vendas':
         csv = 'Data;Valor;Cliente;Forma Pgto\n'
         vendas.forEach(v => {
-          csv += `${formatDate(v.data)};${v.valor_total.toFixed(2)};${v.cliente_nome || '-'};${v.forma_pagamento || '-'}\n`
+          csv += `${formatDate(v.data_venda || v.data)};${(v.valor_total || 0).toFixed(2)};${v.cliente_nome || v.cliente?.nome || '-'};${v.forma_pagamento || '-'}\n`
         })
         filename = 'relatorio_vendas'
         break
@@ -618,15 +639,15 @@ export default function RelatoriosPage() {
             </div>
             <div className="glass-card p-6">
               <p className="text-dark-400 mb-2">Total de Produtos</p>
-              <p className="text-3xl font-bold text-white">{dadosEstoque.totalProdutos}</p>
+              <p className="text-3xl font-bold text-white">{dadosEstoque.totalProdutos.toLocaleString('pt-BR')}</p>
             </div>
             <div className="glass-card p-6">
               <p className="text-dark-400 mb-2">Itens em Estoque</p>
-              <p className="text-3xl font-bold text-white">{dadosEstoque.qtdTotal}</p>
+              <p className="text-3xl font-bold text-white">{dadosEstoque.qtdTotal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}</p>
             </div>
             <div className="glass-card p-6">
               <p className="text-dark-400 mb-2">Abaixo do Mínimo</p>
-              <p className="text-3xl font-bold text-yellow-400">{dadosEstoque.estoqueMinimo}</p>
+              <p className="text-3xl font-bold text-yellow-400">{dadosEstoque.estoqueMinimo.toLocaleString('pt-BR')}</p>
             </div>
           </div>
 

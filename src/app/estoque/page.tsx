@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, Select } from '@/components/ui/Form'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
+import { FornecedorDetailModal } from '@/components/ui/DetailModals'
 import { 
   Produto, Categoria, ClassificacaoFiscal, Fornecedor, MovimentacaoEstoque,
   fetchProdutos, createProduto, updateProduto, deleteProduto,
@@ -18,7 +19,7 @@ import {
   fetchClassificacoesFiscais, fetchFornecedores, fetchMovimentacoesEstoque,
   checkProdutoDuplicado
 } from '@/lib/database'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, normalizeUnidade } from '@/lib/utils'
 
 interface ImportResult {
   success: number
@@ -92,6 +93,10 @@ export default function EstoquePage() {
   const [isHistoricoModalOpen, setIsHistoricoModalOpen] = useState(false)
   const [isFormadorPrecoOpen, setIsFormadorPrecoOpen] = useState(false)
   const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  
+  // Modais de Detalhes
+  const [fornecedorModalOpen, setFornecedorModalOpen] = useState(false)
+  const [selectedFornecedorId, setSelectedFornecedorId] = useState<number | null>(null)
   
   // Estados para importação CSV
   const [importing, setImporting] = useState(false)
@@ -426,7 +431,7 @@ export default function EstoquePage() {
           const estoqueMinimo = parseNumber(columns[6])
           const estoqueMaximo = parseNumber(columns[7])
           const estoqueAtual = parseNumber(columns[8])
-          const unidade = columns[9] || 'UN'
+          const unidade = normalizeUnidade(columns[9])
           const valorVenda = parseNumber(columns[11])
           const valorCusto = parseNumber(columns[12])
           const peso = parseNumber(columns[13])
@@ -1666,6 +1671,13 @@ export default function EstoquePage() {
           )}
         </div>
       </Modal>
+
+      {/* Modal de Detalhes */}
+      <FornecedorDetailModal 
+        isOpen={fornecedorModalOpen} 
+        onClose={() => setFornecedorModalOpen(false)} 
+        fornecedorId={selectedFornecedorId} 
+      />
     </div>
   )
 }

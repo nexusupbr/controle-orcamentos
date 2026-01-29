@@ -16,9 +16,10 @@ import {
   fetchNotasFiscaisEntrada, fetchFornecedores, fetchProdutos,
   createNotaFiscalEntrada, createFornecedor, createProduto,
   createMovimentacaoEstoque, createContaPagar,
+  deleteNotaFiscalEntradaCascade,
   NotaFiscalEntrada, Fornecedor, Produto
 } from '@/lib/database'
-import { formatCurrency, formatDate, cn } from '@/lib/utils'
+import { formatCurrency, formatDate, cn, normalizeUnidade } from '@/lib/utils'
 
 interface ItemNF {
   codigo_produto_nf: string
@@ -84,6 +85,12 @@ export default function NotasFiscaisPage() {
   const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'ignorar'>>({})
   const [itemSubstituicao, setItemSubstituicao] = useState<Record<number, number>>({})
 
+  // Seleção e exclusão em massa
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [isDeleteMassModalOpen, setIsDeleteMassModalOpen] = useState(false)
+  const [deletingMass, setDeletingMass] = useState(false)
+  const [deleteMassProgress, setDeleteMassProgress] = useState({ current: 0, total: 0, errors: 0 })
+
   useEffect(() => {
     loadData()
   }, [])
@@ -103,6 +110,59 @@ export default function NotasFiscaisPage() {
       console.error('Erro ao carregar dados:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Seleção em massa
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredNotas.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredNotas.map(n => n.id)))
+    }
+  }
+
+  const toggleSelectOne = (id: number) => {
+    const newSet = new Set(Array.from(selectedIds))
+    if (newSet.has(id)) {
+      newSet.delete(id)
+    } else {
+      newSet.add(id)
+    }
+    setSelectedIds(newSet)
+  }
+
+  // Exclusão em massa
+  const handleDeleteMass = async () => {
+    if (selectedIds.size === 0) return
+    
+    setDeletingMass(true)
+    setDeleteMassProgress({ current: 0, total: selectedIds.size, errors: 0 })
+    
+    let errors = 0
+    let current = 0
+    
+    for (const id of Array.from(selectedIds)) {
+      try {
+        const result = await deleteNotaFiscalEntradaCascade(id)
+        if (!result.success) {
+          errors++
+        }
+      } catch (err) {
+        console.error(`Erro ao excluir nota ${id}:`, err)
+        errors++
+      }
+      current++
+      setDeleteMassProgress({ current, total: selectedIds.size, errors })
+    }
+    
+    setDeletingMass(false)
+    setIsDeleteMassModalOpen(false)
+    setSelectedIds(new Set())
+    await loadData()
+    
+    if (errors > 0) {
+      alert(`Exclusão concluída. ${current - errors} excluídas, ${errors} erros.`)
     }
   }
 
@@ -152,7 +212,7 @@ export default function NotasFiscaisPage() {
           descricao: getTagValue(prod, 'xProd'),
           ncm: getTagValue(prod, 'NCM'),
           cfop: getTagValue(prod, 'CFOP'),
-          unidade: getTagValue(prod, 'uCom'),
+          unidade: normalizeUnidade(getTagValue(prod, 'uCom')),
           quantidade: parseFloat(getTagValue(prod, 'qCom')) || 0,
           valor_unitario: parseFloat(getTagValue(prod, 'vUnCom')) || 0,
           valor_total: parseFloat(getTagValue(prod, 'vProd')) || 0,
@@ -529,11 +589,45 @@ export default function NotasFiscaisPage() {
       {/* Lista de Notas */}
       {activeTab === 'entrada' && (
         <div className="glass-card overflow-hidden">
+          {/* Barra de ações em massa */}
+          {selectedIds.size > 0 && (
+            <div className="p-4 border-b border-dark-700 flex items-center justify-between bg-dark-800">
+              <span className="text-dark-300 text-sm">
+                {selectedIds.size} {selectedIds.size === 1 ? 'nota selecionada' : 'notas selecionadas'}
+              </span>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="danger"
+                  size="sm"
+                  leftIcon={<Trash2 className="w-4 h-4" />}
+                  onClick={() => setIsDeleteMassModalOpen(true)}
+                >
+                  Excluir Selecionadas
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  Limpar
+                </Button>
+              </div>
+            </div>
+          )}
+          
           {filteredNotas.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th className="w-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.size === filteredNotas.length && filteredNotas.length > 0}
+                        onChange={toggleSelectAll}
+                        className="w-4 h-4 rounded border-dark-500 bg-dark-700 text-primary-500 focus:ring-primary-500"
+                      />
+                    </th>
                     <th>Número</th>
                     <th>Data</th>
                     <th>Fornecedor</th>
@@ -544,7 +638,15 @@ export default function NotasFiscaisPage() {
                 </thead>
                 <tbody>
                   {filteredNotas.map((nota) => (
-                    <tr key={nota.id} className="group">
+                    <tr key={nota.id} className={`group ${selectedIds.has(nota.id) ? 'bg-primary-500/10' : ''}`}>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(nota.id)}
+                          onChange={() => toggleSelectOne(nota.id)}
+                          className="w-4 h-4 rounded border-dark-500 bg-dark-700 text-primary-500 focus:ring-primary-500"
+                        />
+                      </td>
                       <td>
                         <div>
                           <span className="font-medium text-white">{nota.numero}</span>
@@ -865,6 +967,61 @@ export default function NotasFiscaisPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Modal Exclusão em Massa */}
+      <Modal
+        isOpen={isDeleteMassModalOpen}
+        onClose={() => !deletingMass && setIsDeleteMassModalOpen(false)}
+        title="Excluir Notas Fiscais Selecionadas"
+        size="md"
+      >
+        <div className="space-y-4">
+          {!deletingMass ? (
+            <>
+              <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0" />
+                <div>
+                  <p className="text-white font-medium">
+                    Tem certeza que deseja excluir {selectedIds.size} nota{selectedIds.size > 1 ? 's' : ''} fiscal{selectedIds.size > 1 ? 'is' : ''}?
+                  </p>
+                  <p className="text-dark-400 text-sm mt-1">
+                    Esta ação irá reverter o estoque, remover lançamentos financeiros e contas a pagar vinculadas.
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex justify-end gap-3">
+                <Button variant="secondary" onClick={() => setIsDeleteMassModalOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button variant="danger" onClick={handleDeleteMass}>
+                  Excluir {selectedIds.size} nota{selectedIds.size > 1 ? 's' : ''}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="py-8">
+              <div className="flex flex-col items-center gap-4">
+                <LoadingSpinner size="lg" />
+                <p className="text-white">
+                  Excluindo... {deleteMassProgress.current} de {deleteMassProgress.total}
+                </p>
+                {deleteMassProgress.errors > 0 && (
+                  <p className="text-yellow-400 text-sm">
+                    {deleteMassProgress.errors} erro{deleteMassProgress.errors > 1 ? 's' : ''} (serão ignorados)
+                  </p>
+                )}
+                <div className="w-full bg-dark-700 rounded-full h-2">
+                  <div 
+                    className="bg-primary-500 h-2 rounded-full transition-all"
+                    style={{ width: `${(deleteMassProgress.current / deleteMassProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   )

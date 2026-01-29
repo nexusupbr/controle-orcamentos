@@ -2,22 +2,25 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { 
-  Plus, Upload, FileText, Search, Package, CheckCircle, 
-  XCircle, RefreshCw, Eye, DollarSign, Truck, Building2,
-  AlertTriangle, ChevronDown, ChevronUp
+  Upload, FileText, Search, Package, Plus,
+  Eye, DollarSign, Truck, Building2,
+  ChevronDown, ChevronUp, Trash2, RefreshCw, CheckCircle, AlertTriangle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
+import { FornecedorDetailModal, ProdutoDetailModal } from '@/components/ui/DetailModals'
 import { 
-  NotaFiscalEntrada, ItemNotaEntrada, Produto, Fornecedor, CategoriaFinanceira,
+  NotaFiscalEntrada, Produto, Fornecedor, CategoriaFinanceira,
   fetchNotasFiscaisEntrada, createNotaFiscalEntrada, createItemNotaEntrada,
-  fetchProdutos, createProduto, updateProduto, fetchProdutoByNome, fetchProdutoByCodigo,
-  fetchFornecedores, createFornecedor, fetchFornecedorByCnpj,
+  fetchProdutos, fetchFornecedores, createFornecedor, fetchFornecedorByCnpj,
   fetchCategoriasFinanceiras, createLancamentoFinanceiro, createContaPagar,
-  createMovimentacaoEstoque
+  createMovimentacaoEstoque, deleteNotaFiscalEntradaCascade,
+  upsertProdutoPorImportacao, incrementarEstoqueProduto, ItemNFImportacao,
+  createCategoriaFinanceira,
+  buscarLancamentoParaReconciliar, reconciliarLancamentoComNF, CandidatoReconciliacao
 } from '@/lib/database'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatCurrency, formatDate, normalizeUnidade } from '@/lib/utils'
 
 interface ProdutoNF {
   codigo: string
@@ -28,9 +31,12 @@ interface ProdutoNF {
   quantidade: number
   valorUnitario: number
   valorTotal: number
-  produtoExistente?: Produto | null
-  acao: 'cadastrar' | 'nao' | 'substituir'
-  produtoSubstituirId?: number
+  gtin: string  // código de barras do XML
+  // Resultado da importação (preenchido após processar)
+  resultadoImportacao?: {
+    produtoId: number
+    acao: 'criado' | 'atualizado'
+  }
 }
 
 interface DadosNF {
@@ -77,6 +83,18 @@ export default function ComprasPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [expandedNota, setExpandedNota] = useState<number | null>(null)
   
+  // Modais de Detalhes
+  const [fornecedorModalOpen, setFornecedorModalOpen] = useState(false)
+  const [produtoModalOpen, setProdutoModalOpen] = useState(false)
+  const [selectedFornecedorId, setSelectedFornecedorId] = useState<number | null>(null)
+  const [selectedProdutoId, setSelectedProdutoId] = useState<number | null>(null)
+  
+  // Exclusão de NF
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
+  const [selectedNotaDelete, setSelectedNotaDelete] = useState<NotaFiscalEntrada | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteResult, setDeleteResult] = useState<{ success: boolean; message: string } | null>(null)
+  
   // Import XML
   const [isImportModalOpen, setIsImportModalOpen] = useState(false)
   const [xmlContent, setXmlContent] = useState<string>('')
@@ -91,7 +109,24 @@ export default function ComprasPage() {
   const [lancarEstoque, setLancarEstoque] = useState(true)
   const [gerarContaPagar, setGerarContaPagar] = useState(true)
   const [dataVencimento, setDataVencimento] = useState<string>('')
-  const [margem, setMargem] = useState<number>(30)
+  const [atualizarFormadorPreco, setAtualizarFormadorPreco] = useState(true)
+  
+  // Modal de nova categoria inline
+  const [isNovaCategoriaModalOpen, setIsNovaCategoriaModalOpen] = useState(false)
+  const [novaCategoriaName, setNovaCategoriaName] = useState('')
+  const [savingCategoria, setSavingCategoria] = useState(false)
+  
+  // Reconciliação com lançamentos OFX existentes
+  const [candidatosReconciliacao, setCandidatosReconciliacao] = useState<CandidatoReconciliacao[]>([])
+  const [showReconciliacaoModal, setShowReconciliacaoModal] = useState(false)
+  const [reconciliacaoSelecionada, setReconciliacaoSelecionada] = useState<number | null>(null)
+  const [pendingNFData, setPendingNFData] = useState<{
+    notaId: number
+    numero: string
+    fornecedorNome: string
+    categoriaId: number | null
+    formaPagamento: string
+  } | null>(null)
   
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -112,11 +147,57 @@ export default function ComprasPage() {
       setProdutos(produtosData)
       setFornecedores(fornecedoresData)
       setCategorias(categoriasData)
+      
+      // Selecionar "Despesa de Material" como default (se existir)
+      const despesaMaterial = categoriasData.find(
+        c => c.nome.toLowerCase().includes('despesa de material') || c.nome.toLowerCase().includes('material')
+      )
+      if (despesaMaterial && !categoriaId) {
+        setCategoriaId(despesaMaterial.id)
+      }
     } catch (err) {
       console.error('Erro ao carregar dados:', err)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Excluir NF de entrada com cascade
+  const handleDeleteNota = async () => {
+    if (!selectedNotaDelete) return
+    
+    setDeleting(true)
+    setDeleteResult(null)
+    
+    try {
+      const result = await deleteNotaFiscalEntradaCascade(selectedNotaDelete.id)
+      setDeleteResult(result)
+      
+      if (result.success) {
+        // Aguardar um pouco para mostrar o resultado e então recarregar
+        setTimeout(async () => {
+          await loadData()
+          setIsDeleteModalOpen(false)
+          setSelectedNotaDelete(null)
+          setDeleteResult(null)
+          setExpandedNota(null)
+        }, 1500)
+      }
+    } catch (err) {
+      setDeleteResult({ 
+        success: false, 
+        message: 'Erro ao excluir: ' + (err instanceof Error ? err.message : 'Erro desconhecido') 
+      })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const openDeleteModal = (nota: NotaFiscalEntrada, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedNotaDelete(nota)
+    setDeleteResult(null)
+    setIsDeleteModalOpen(true)
   }
 
   // Filtrar notas
@@ -149,12 +230,11 @@ export default function ComprasPage() {
             descricao: prod.querySelector('xProd')?.textContent || '',
             ncm: prod.querySelector('NCM')?.textContent || '',
             cfop: prod.querySelector('CFOP')?.textContent || '',
-            unidade: prod.querySelector('uCom')?.textContent || 'UN',
+            unidade: normalizeUnidade(prod.querySelector('uCom')?.textContent),
             quantidade: parseFloat(prod.querySelector('qCom')?.textContent || '0'),
             valorUnitario: parseFloat(prod.querySelector('vUnCom')?.textContent || '0'),
             valorTotal: parseFloat(prod.querySelector('vProd')?.textContent || '0'),
-            acao: 'cadastrar',
-            produtoExistente: null
+            gtin: prod.querySelector('cEAN')?.textContent || prod.querySelector('cEANTrib')?.textContent || ''
           })
         }
       })
@@ -204,17 +284,6 @@ export default function ComprasPage() {
       
       const dados = parseXML(content)
       if (dados) {
-        // Verificar produtos existentes
-        for (const prod of dados.produtos) {
-          // Tentar encontrar por código ou nome
-          let existente = await fetchProdutoByCodigo(prod.codigo)
-          if (!existente) {
-            existente = await fetchProdutoByNome(prod.descricao)
-          }
-          prod.produtoExistente = existente
-          prod.acao = existente ? 'nao' : 'cadastrar'
-        }
-        
         // Verificar fornecedor
         const fornecedor = await fetchFornecedorByCnpj(dados.fornecedor.cnpj)
         setFornecedorExistente(fornecedor)
@@ -228,18 +297,7 @@ export default function ComprasPage() {
     reader.readAsText(file)
   }
 
-  // Atualizar ação do produto
-  const updateProdutoAcao = (index: number, acao: 'cadastrar' | 'nao' | 'substituir', produtoId?: number) => {
-    if (!dadosNF) return
-    
-    const novosProdutos = [...dadosNF.produtos]
-    novosProdutos[index].acao = acao
-    novosProdutos[index].produtoSubstituirId = produtoId
-    
-    setDadosNF({ ...dadosNF, produtos: novosProdutos })
-  }
-
-  // Processar importação
+  // Processar importação (FLUXO AUTOMÁTICO SIMPLIFICADO)
   const processarImportacao = async () => {
     if (!dadosNF) return
     
@@ -286,46 +344,36 @@ export default function ComprasPage() {
         status: 'processada'
       })
 
-      // 3. Processar cada produto
+      // 3. Processar cada produto (AUTOMÁTICO: cria ou atualiza)
+      const resultados: { descricao: string; acao: 'criado' | 'atualizado' }[] = []
+      
       for (const prod of dadosNF.produtos) {
-        let produtoId: number | undefined
-        
-        if (prod.acao === 'cadastrar') {
-          // Cadastrar novo produto
-          const valorVenda = prod.valorUnitario * (1 + margem / 100)
-          const novoProduto = await createProduto({
-            codigo: prod.codigo,
-            nome: prod.descricao,
-            ncm: prod.ncm,
-            cfop: prod.cfop,
-            unidade: prod.unidade,
-            valor_custo: prod.valorUnitario,
-            valor_venda: valorVenda,
-            custo_medio: prod.valorUnitario,
-            custo_ultima_compra: prod.valorUnitario,
-            margem_lucro: margem,
-            quantidade_estoque: lancarEstoque ? prod.quantidade : 0,
-            fornecedor_id: fornecedorId,
-            classificacao_fiscal: '07',
-            ativo: true
-          })
-          produtoId = novoProduto.id
-        } else if (prod.acao === 'substituir' && prod.produtoSubstituirId) {
-          // Atualizar produto existente
-          await updateProduto(prod.produtoSubstituirId, {
-            codigo: prod.codigo,
-            valor_custo: prod.valorUnitario,
-            custo_ultima_compra: prod.valorUnitario,
-          })
-          produtoId = prod.produtoSubstituirId
-        } else if (prod.produtoExistente) {
-          produtoId = prod.produtoExistente.id
+        // Converter para ItemNFImportacao
+        const itemNF: ItemNFImportacao = {
+          codigo: prod.codigo,
+          descricao: prod.descricao,
+          ncm: prod.ncm,
+          cfop: prod.cfop,
+          unidade: prod.unidade,
+          quantidade: prod.quantidade,
+          valorUnitario: prod.valorUnitario,
+          valorTotal: prod.valorTotal,
+          gtin: prod.gtin
         }
-
+        
+        // Upsert automático: encontra existente ou cria novo
+        const resultado = await upsertProdutoPorImportacao(
+          itemNF, 
+          atualizarFormadorPreco, 
+          fornecedorId
+        )
+        
+        resultados.push({ descricao: prod.descricao, acao: resultado.acao })
+        
         // Criar item da nota
         await createItemNotaEntrada({
           nota_fiscal_id: nota.id,
-          produto_id: produtoId,
+          produto_id: resultado.produtoId,
           codigo_produto_nf: prod.codigo,
           descricao: prod.descricao,
           ncm: prod.ncm,
@@ -335,14 +383,13 @@ export default function ComprasPage() {
           valor_unitario: prod.valorUnitario,
           valor_total: prod.valorTotal,
           valor_desconto: 0,
-          acao: prod.acao === 'cadastrar' ? 'cadastrado' : 
-                prod.acao === 'substituir' ? 'substituido' : 'existente'
+          acao: resultado.acao === 'criado' ? 'cadastrado' : 'existente'
         })
 
-        // Lançar movimentação de estoque
-        if (lancarEstoque && produtoId) {
+        // Lançar movimentação de estoque e incrementar quantidade
+        if (lancarEstoque) {
           await createMovimentacaoEstoque({
-            produto_id: produtoId,
+            produto_id: resultado.produtoId,
             tipo: 'entrada',
             quantidade: prod.quantidade,
             valor_unitario: prod.valorUnitario,
@@ -351,23 +398,83 @@ export default function ComprasPage() {
             motivo: `Entrada NF ${dadosNF.numero}`,
             data_movimentacao: new Date().toISOString()
           })
+          
+          // Incrementar estoque do produto
+          await incrementarEstoqueProduto(resultado.produtoId, prod.quantidade)
         }
       }
 
-      // 4. Lançar no caixa (se solicitado)
+      // 4. Lançar no caixa (se solicitado) - COM RECONCILIAÇÃO
       if (lancarCaixa && categoriaId) {
-        await createLancamentoFinanceiro({
-          tipo: 'despesa',
-          categoria_id: categoriaId,
+        // Tentar reconciliar com lançamento OFX existente
+        const descricaoNF = `NF ${dadosNF.numero} - ${dadosNF.fornecedor.razaoSocial}`
+        
+        const { candidatos, melhorMatch } = await buscarLancamentoParaReconciliar({
+          data_nf: dadosNF.dataEmissao,
           valor: dadosNF.valorTotal,
-          data_lancamento: new Date().toISOString().split('T')[0],
-          forma_pagamento: formaPagamento as any,
-          fornecedor_id: fornecedorId,
-          nota_fiscal_entrada_id: nota.id,
-          descricao: `NF ${dadosNF.numero} - ${dadosNF.fornecedor.razaoSocial}`,
-          com_nota_fiscal: true,
-          conciliado: false
+          descricao_xml: descricaoNF,
+          fornecedor_nome: dadosNF.fornecedor.razaoSocial
         })
+        
+        if (melhorMatch) {
+          // Match confiável encontrado - reconciliar automaticamente
+          console.log(`✓ Match encontrado: Lançamento #${melhorMatch.id} (score: ${(melhorMatch.score * 100).toFixed(0)}%)`)
+          
+          const resultado = await reconciliarLancamentoComNF({
+            lancamento_id: melhorMatch.id,
+            nota_fiscal_entrada_id: nota.id,
+            numero_nf: dadosNF.numero,
+            fornecedor_nome: dadosNF.fornecedor.razaoSocial,
+            categoria_id: categoriaId,
+            forma_pagamento: formaPagamento
+          })
+          
+          if (!resultado.success) {
+            console.error('Erro na reconciliação:', resultado.error)
+            // Fallback: criar novo lançamento
+            await createLancamentoFinanceiro({
+              tipo: 'despesa',
+              categoria_id: categoriaId,
+              valor: dadosNF.valorTotal,
+              data_lancamento: new Date().toISOString().split('T')[0],
+              forma_pagamento: formaPagamento as any,
+              fornecedor_id: fornecedorId,
+              nota_fiscal_entrada_id: nota.id,
+              descricao: descricaoNF,
+              com_nota_fiscal: true,
+              conciliado: false
+            })
+          }
+        } else if (candidatos.length > 1) {
+          // Múltiplos candidatos - mostrar modal de seleção
+          setCandidatosReconciliacao(candidatos)
+          setPendingNFData({
+            notaId: nota.id,
+            numero: dadosNF.numero,
+            fornecedorNome: dadosNF.fornecedor.razaoSocial,
+            categoriaId,
+            formaPagamento
+          })
+          setShowReconciliacaoModal(true)
+          // Não finalizar aqui - esperar seleção do usuário
+          // O modal vai chamar a função de conclusão
+          setProcessing(false)
+          return // Sair para esperar seleção
+        } else {
+          // Nenhum match - criar novo lançamento normalmente
+          await createLancamentoFinanceiro({
+            tipo: 'despesa',
+            categoria_id: categoriaId,
+            valor: dadosNF.valorTotal,
+            data_lancamento: new Date().toISOString().split('T')[0],
+            forma_pagamento: formaPagamento as any,
+            fornecedor_id: fornecedorId,
+            nota_fiscal_entrada_id: nota.id,
+            descricao: descricaoNF,
+            com_nota_fiscal: true,
+            conciliado: false
+          })
+        }
       }
 
       // 5. Gerar conta a pagar (se boleto ou prazo)
@@ -386,13 +493,71 @@ export default function ComprasPage() {
         })
       }
 
+      // Mostrar resumo da importação
+      const criados = resultados.filter(r => r.acao === 'criado').length
+      const atualizados = resultados.filter(r => r.acao === 'atualizado').length
+      
       await loadData()
       closeImportModal()
-      alert('Nota fiscal importada com sucesso!')
+      alert(`Nota fiscal importada com sucesso!\n\n• ${criados} produto(s) criado(s)\n• ${atualizados} produto(s) atualizado(s)`)
       
     } catch (err) {
       console.error('Erro ao processar importação:', err)
       alert('Erro ao processar importação: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  // Função para finalizar reconciliação após seleção do usuário
+  const handleReconciliacaoSelecionada = async (lancamentoId: number | null) => {
+    if (!pendingNFData) return
+    
+    setProcessing(true)
+    try {
+      if (lancamentoId !== null) {
+        // Reconciliar com lançamento selecionado
+        const resultado = await reconciliarLancamentoComNF({
+          lancamento_id: lancamentoId,
+          nota_fiscal_entrada_id: pendingNFData.notaId,
+          numero_nf: pendingNFData.numero,
+          fornecedor_nome: pendingNFData.fornecedorNome,
+          categoria_id: pendingNFData.categoriaId,
+          forma_pagamento: pendingNFData.formaPagamento
+        })
+        
+        if (resultado.success) {
+          alert(`Lançamento reconciliado com sucesso!\n\nO lançamento OFX existente foi atualizado com os dados da NF ${pendingNFData.numero}.`)
+        } else {
+          throw new Error(resultado.error || 'Erro desconhecido')
+        }
+      } else {
+        // Criar novo lançamento (usuário escolheu "Criar novo")
+        await createLancamentoFinanceiro({
+          tipo: 'despesa',
+          categoria_id: pendingNFData.categoriaId,
+          valor: dadosNF?.valorTotal || 0,
+          data_lancamento: new Date().toISOString().split('T')[0],
+          forma_pagamento: pendingNFData.formaPagamento as any,
+          fornecedor_id: fornecedores.find(f => 
+            f.razao_social === pendingNFData.fornecedorNome || 
+            f.nome_fantasia === pendingNFData.fornecedorNome
+          )?.id || null,
+          nota_fiscal_entrada_id: pendingNFData.notaId,
+          descricao: `NF ${pendingNFData.numero} - ${pendingNFData.fornecedorNome}`,
+          com_nota_fiscal: true,
+          conciliado: false
+        })
+      }
+      
+      await loadData()
+      setShowReconciliacaoModal(false)
+      setCandidatosReconciliacao([])
+      setPendingNFData(null)
+      closeImportModal()
+    } catch (err) {
+      console.error('Erro ao processar reconciliação:', err)
+      alert('Erro ao processar: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
     } finally {
       setProcessing(false)
     }
@@ -410,7 +575,10 @@ export default function ComprasPage() {
     setLancarEstoque(true)
     setGerarContaPagar(true)
     setDataVencimento('')
-    setMargem(30)
+    setAtualizarFormadorPreco(true)
+    setCandidatosReconciliacao([])
+    setShowReconciliacaoModal(false)
+    setPendingNFData(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -535,7 +703,20 @@ export default function ComprasPage() {
                         <span className="font-medium text-white">NF {nota.numero}</span>
                         <Badge variant="success">Processada</Badge>
                       </div>
-                      <p className="text-sm text-dark-400">{nota.fornecedor_razao_social}</p>
+                      <p className="text-sm text-dark-400">
+                        {nota.fornecedor_id ? (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedFornecedorId(nota.fornecedor_id)
+                              setFornecedorModalOpen(true)
+                            }}
+                            className="text-primary-400 hover:text-primary-300 transition-colors"
+                          >
+                            {nota.fornecedor_razao_social}
+                          </button>
+                        ) : nota.fornecedor_razao_social}
+                      </p>
                     </div>
                   </div>
                   
@@ -578,15 +759,25 @@ export default function ComprasPage() {
                       <p className="text-xs text-dark-400 mb-1">Chave de Acesso</p>
                       <p className="text-xs text-dark-300 font-mono break-all">{nota.chave_acesso}</p>
                     </div>
-                    <div className="flex gap-2 mt-4">
-                      <Badge variant={nota.lancado_caixa ? 'success' : 'secondary'}>
-                        {nota.lancado_caixa ? 'Lançado no Caixa' : 'Não lançado'}
-                      </Badge>
-                      {nota.forma_pagamento && (
-                        <Badge variant="primary">
-                          {formasPagamento.find(f => f.value === nota.forma_pagamento)?.label || nota.forma_pagamento}
+                    <div className="flex justify-between items-center mt-4">
+                      <div className="flex gap-2">
+                        <Badge variant={nota.lancado_caixa ? 'success' : 'secondary'}>
+                          {nota.lancado_caixa ? 'Lançado no Caixa' : 'Não lançado'}
                         </Badge>
-                      )}
+                        {nota.forma_pagamento && (
+                          <Badge variant="primary">
+                            {formasPagamento.find(f => f.value === nota.forma_pagamento)?.label || nota.forma_pagamento}
+                          </Badge>
+                        )}
+                      </div>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={(e) => openDeleteModal(nota, e)}
+                        leftIcon={<Trash2 className="w-4 h-4" />}
+                      >
+                        Excluir NF
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -692,19 +883,25 @@ export default function ComprasPage() {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <span className="font-medium text-white">Produtos ({dadosNF.produtos.length})</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-dark-400">Margem padrão:</span>
+                  <label className="flex items-center gap-2 cursor-pointer">
                     <input
-                      type="number"
-                      value={margem}
-                      onChange={(e) => setMargem(Number(e.target.value))}
-                      className="input w-20 text-center"
+                      type="checkbox"
+                      checked={atualizarFormadorPreco}
+                      onChange={(e) => setAtualizarFormadorPreco(e.target.checked)}
+                      className="w-4 h-4 rounded border-dark-500 bg-dark-700 text-primary-500 focus:ring-primary-500"
                     />
-                    <span className="text-dark-400">%</span>
-                  </div>
+                    <span className="text-sm text-dark-300">Atualizar preço de venda automaticamente</span>
+                  </label>
                 </div>
                 
-                <div className="space-y-2 max-h-64 overflow-y-auto">
+                {/* Legenda */}
+                <div className="flex gap-4 mb-3 text-xs">
+                  <span className="text-dark-400">Ao importar:</span>
+                  <span className="text-green-400">• Produto existente = Atualiza custo e preço</span>
+                  <span className="text-yellow-400">• Produto novo = Cria automaticamente</span>
+                </div>
+                
+                <div className="space-y-2 max-h-80 overflow-y-auto">
                   {dadosNF.produtos.map((prod, index) => (
                     <div key={index} className="glass-card p-3">
                       <div className="flex items-start justify-between gap-4">
@@ -712,69 +909,22 @@ export default function ComprasPage() {
                           <div className="flex items-center gap-2 mb-1">
                             <span className="text-xs text-dark-400">#{prod.codigo}</span>
                             <span className="font-medium text-white text-sm">{prod.descricao}</span>
+                            {prod.gtin && prod.gtin.length > 3 && !/^0+$/.test(prod.gtin) && (
+                              <span className="text-xs text-dark-500">EAN: {prod.gtin}</span>
+                            )}
                           </div>
                           <div className="flex gap-4 text-xs text-dark-400">
                             <span>NCM: {prod.ncm}</span>
                             <span>Qtd: {prod.quantidade} {prod.unidade}</span>
-                            <span>Unit: {formatCurrency(prod.valorUnitario)}</span>
+                            <span>Custo Unit: {formatCurrency(prod.valorUnitario)}</span>
                             <span className="text-primary-400 font-medium">Total: {formatCurrency(prod.valorTotal)}</span>
                           </div>
                         </div>
                         
-                        <div className="flex flex-col gap-1">
-                          {prod.produtoExistente ? (
-                            <>
-                              <Badge variant="success" className="text-xs">Produto existente</Badge>
-                              <div className="flex gap-1">
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                  <input
-                                    type="radio"
-                                    name={`acao-${index}`}
-                                    checked={prod.acao === 'nao'}
-                                    onChange={() => updateProdutoAcao(index, 'nao')}
-                                    className="text-primary-500"
-                                  />
-                                  <span className="text-dark-300">Não adicionar</span>
-                                </label>
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                  <input
-                                    type="radio"
-                                    name={`acao-${index}`}
-                                    checked={prod.acao === 'substituir'}
-                                    onChange={() => updateProdutoAcao(index, 'substituir', prod.produtoExistente?.id)}
-                                    className="text-primary-500"
-                                  />
-                                  <span className="text-dark-300">Substituir</span>
-                                </label>
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <Badge variant="warning" className="text-xs">Novo produto</Badge>
-                              <div className="flex gap-1">
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                  <input
-                                    type="radio"
-                                    name={`acao-${index}`}
-                                    checked={prod.acao === 'cadastrar'}
-                                    onChange={() => updateProdutoAcao(index, 'cadastrar')}
-                                    className="text-primary-500"
-                                  />
-                                  <span className="text-dark-300">Cadastrar</span>
-                                </label>
-                                <label className="flex items-center gap-1 text-xs cursor-pointer">
-                                  <input
-                                    type="radio"
-                                    name={`acao-${index}`}
-                                    checked={prod.acao === 'nao'}
-                                    onChange={() => updateProdutoAcao(index, 'nao')}
-                                    className="text-primary-500"
-                                  />
-                                  <span className="text-dark-300">Não</span>
-                                </label>
-                              </div>
-                            </>
-                          )}
+                        <div className="flex items-center">
+                          <Badge variant="info" className="text-xs">
+                            Automático
+                          </Badge>
                         </div>
                       </div>
                     </div>
@@ -850,17 +1000,32 @@ export default function ComprasPage() {
                     </div>
                     
                     <div>
-                      <label className="block text-sm text-dark-300 mb-2">Categoria</label>
-                      <select
-                        value={categoriaId || ''}
-                        onChange={(e) => setCategoriaId(Number(e.target.value))}
-                        className="input w-full"
-                      >
-                        <option value="">Selecione...</option>
-                        {categorias.map(c => (
-                          <option key={c.id} value={c.id}>{c.nome}</option>
-                        ))}
-                      </select>
+                      <label className="block text-sm text-dark-300 mb-2">
+                        Categoria da Despesa <span className="text-red-400">*</span>
+                      </label>
+                      <div className="flex gap-2">
+                        <select
+                          value={categoriaId || ''}
+                          onChange={(e) => setCategoriaId(Number(e.target.value) || null)}
+                          className={`input flex-1 ${!categoriaId && lancarCaixa ? 'border-red-500/50' : ''}`}
+                        >
+                          <option value="">Selecione uma categoria...</option>
+                          {categorias.map(c => (
+                            <option key={c.id} value={c.id}>{c.nome}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => setIsNovaCategoriaModalOpen(true)}
+                          className="p-2.5 bg-dark-700 hover:bg-dark-600 text-dark-300 hover:text-primary-400 rounded-lg transition-colors"
+                          title="Criar nova categoria"
+                        >
+                          <Plus className="w-5 h-5" />
+                        </button>
+                      </div>
+                      {!categoriaId && lancarCaixa && (
+                        <p className="text-xs text-red-400 mt-1">Selecione uma categoria para continuar</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -895,7 +1060,16 @@ export default function ComprasPage() {
                 <Button variant="secondary" onClick={() => setStep('produtos')}>
                   Voltar
                 </Button>
-                <Button onClick={() => setStep('confirmar')}>
+                <Button 
+                  onClick={() => {
+                    // Validar categoria se lançar no caixa
+                    if (lancarCaixa && !categoriaId) {
+                      alert('Selecione uma categoria de despesa para lançar no caixa.')
+                      return
+                    }
+                    setStep('confirmar')
+                  }}
+                >
                   Próximo
                 </Button>
               </div>
@@ -925,14 +1099,11 @@ export default function ComprasPage() {
                   <div className="border-t border-dark-700 pt-3 mt-3">
                     <p className="text-dark-400 mb-2">Produtos:</p>
                     <div className="space-y-1">
-                      <p className="text-green-400">
-                        {dadosNF.produtos.filter(p => p.acao === 'cadastrar').length} serão cadastrados
+                      <p className="text-primary-400">
+                        {dadosNF.produtos.length} itens serão processados automaticamente
                       </p>
-                      <p className="text-blue-400">
-                        {dadosNF.produtos.filter(p => p.acao === 'substituir').length} serão substituídos
-                      </p>
-                      <p className="text-dark-300">
-                        {dadosNF.produtos.filter(p => p.acao === 'nao').length} não serão adicionados
+                      <p className="text-xs text-dark-400">
+                        (Existentes serão atualizados, novos serão criados)
                       </p>
                     </div>
                   </div>
@@ -966,6 +1137,264 @@ export default function ComprasPage() {
               </div>
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* Modal Confirmação Exclusão NF */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => { setIsDeleteModalOpen(false); setSelectedNotaDelete(null); setDeleteResult(null) }}
+        title="Excluir Nota Fiscal de Entrada"
+        size="md"
+      >
+        <div className="space-y-4">
+          {deleteResult ? (
+            <div className={`p-4 rounded-lg border ${
+              deleteResult.success 
+                ? 'bg-green-500/10 border-green-500/30' 
+                : 'bg-red-500/10 border-red-500/30'
+            }`}>
+              <div className="flex items-start gap-3">
+                {deleteResult.success ? (
+                  <CheckCircle className="w-5 h-5 text-green-400 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+                )}
+                <div>
+                  <p className={`font-medium ${deleteResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                    {deleteResult.success ? 'Exclusão realizada' : 'Erro na exclusão'}
+                  </p>
+                  <p className="text-dark-300 text-sm mt-1">{deleteResult.message}</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-yellow-400 mt-0.5" />
+                  <div>
+                    <p className="text-yellow-400 font-medium">Atenção - Exclusão em Cascata</p>
+                    <p className="text-dark-300 text-sm mt-1">
+                      Ao excluir esta nota fiscal, os seguintes registros também serão removidos:
+                    </p>
+                    <ul className="text-dark-400 text-sm mt-2 list-disc list-inside space-y-1">
+                      <li>Movimentações de estoque vinculadas (quantidade será estornada)</li>
+                      <li>Lançamentos financeiros vinculados</li>
+                      <li>Contas a pagar vinculadas</li>
+                      <li>Itens da nota fiscal</li>
+                    </ul>
+                    <p className="text-dark-300 text-sm mt-3 font-medium">
+                      Esta ação não pode ser desfeita.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              
+              {selectedNotaDelete && (
+                <div className="p-3 bg-dark-700 rounded-lg">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="text-white font-medium">NF {selectedNotaDelete.numero}</p>
+                      <p className="text-dark-400 text-sm">{selectedNotaDelete.fornecedor_razao_social}</p>
+                    </div>
+                    <p className="text-lg font-bold text-white">{formatCurrency(selectedNotaDelete.valor_total)}</p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          
+          <div className="flex justify-end gap-2 pt-2">
+            <Button 
+              variant="secondary" 
+              onClick={() => { setIsDeleteModalOpen(false); setSelectedNotaDelete(null); setDeleteResult(null) }}
+            >
+              {deleteResult?.success ? 'Fechar' : 'Cancelar'}
+            </Button>
+            {!deleteResult && (
+              <Button 
+                variant="danger" 
+                onClick={handleDeleteNota}
+                isLoading={deleting}
+              >
+                Confirmar Exclusão
+              </Button>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modais de Detalhes */}
+      <FornecedorDetailModal 
+        isOpen={fornecedorModalOpen} 
+        onClose={() => setFornecedorModalOpen(false)} 
+        fornecedorId={selectedFornecedorId} 
+      />
+      <ProdutoDetailModal 
+        isOpen={produtoModalOpen} 
+        onClose={() => setProdutoModalOpen(false)} 
+        produtoId={selectedProdutoId} 
+      />
+
+      {/* Modal Nova Categoria (inline na importação) */}
+      <Modal
+        isOpen={isNovaCategoriaModalOpen}
+        onClose={() => { setIsNovaCategoriaModalOpen(false); setNovaCategoriaName('') }}
+        title="Nova Categoria de Despesa"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-2">
+              Nome da Categoria *
+            </label>
+            <input
+              type="text"
+              value={novaCategoriaName}
+              onChange={(e) => setNovaCategoriaName(e.target.value)}
+              placeholder="Ex: Despesa de Material"
+              className="input w-full"
+              autoFocus
+            />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
+            <Button 
+              variant="secondary" 
+              onClick={() => { setIsNovaCategoriaModalOpen(false); setNovaCategoriaName('') }}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              onClick={async () => {
+                if (!novaCategoriaName.trim()) {
+                  alert('Nome é obrigatório')
+                  return
+                }
+                setSavingCategoria(true)
+                try {
+                  const novaCategoria = await createCategoriaFinanceira({
+                    nome: novaCategoriaName.trim(),
+                    tipo: 'despesa',
+                    ativo: true
+                  })
+                  // Atualizar lista e selecionar a nova categoria
+                  const novasCategorias = await fetchCategoriasFinanceiras('despesa')
+                  setCategorias(novasCategorias)
+                  setCategoriaId(novaCategoria.id)
+                  setIsNovaCategoriaModalOpen(false)
+                  setNovaCategoriaName('')
+                } catch (err) {
+                  console.error('Erro ao criar categoria:', err)
+                  alert('Erro ao criar categoria: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+                } finally {
+                  setSavingCategoria(false)
+                }
+              }}
+              disabled={savingCategoria}
+            >
+              {savingCategoria ? 'Criando...' : 'Criar e Selecionar'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal de Seleção de Lançamento para Reconciliação */}
+      <Modal
+        isOpen={showReconciliacaoModal}
+        onClose={() => {
+          setShowReconciliacaoModal(false)
+          setCandidatosReconciliacao([])
+          setPendingNFData(null)
+        }}
+        title="Lançamentos OFX Encontrados"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-yellow-500 font-medium mb-1">Possíveis Duplicados</h4>
+                <p className="text-dark-300 text-sm">
+                  Encontramos lançamentos no caixa que podem ser o mesmo evento desta NF.
+                  Selecione um para reconciliar (atualizar) ou crie um novo lançamento.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {pendingNFData && (
+            <div className="bg-dark-700 rounded-lg p-4">
+              <h5 className="text-dark-300 text-sm mb-2">Dados da NF a importar:</h5>
+              <p className="text-white font-medium">NF {pendingNFData.numero} - {pendingNFData.fornecedorNome}</p>
+              <p className="text-primary-400 font-bold">{formatCurrency(dadosNF?.valorTotal || 0)}</p>
+            </div>
+          )}
+
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {candidatosReconciliacao.map((candidato) => (
+              <div 
+                key={candidato.id}
+                className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
+                  reconciliacaoSelecionada === candidato.id 
+                    ? 'bg-primary-500/20 border-primary-500' 
+                    : 'bg-dark-700 border-dark-600 hover:border-dark-500'
+                }`}
+                onClick={() => setReconciliacaoSelecionada(candidato.id)}
+              >
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-white font-medium">{formatCurrency(candidato.valor)}</span>
+                      <span className="text-dark-400">•</span>
+                      <span className="text-dark-300 text-sm">{formatDate(candidato.data_lancamento)}</span>
+                      {candidato.ofx_fitid && (
+                        <Badge variant="secondary" size="sm">OFX</Badge>
+                      )}
+                    </div>
+                    <p className="text-dark-300 text-sm truncate">{candidato.descricao}</p>
+                    <p className="text-dark-500 text-xs mt-1">
+                      Similaridade: {Math.round(candidato.score * 100)}% | 
+                      Diferença: {candidato.diferencaDias} dia(s)
+                    </p>
+                  </div>
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                    reconciliacaoSelecionada === candidato.id 
+                      ? 'border-primary-500 bg-primary-500' 
+                      : 'border-dark-500'
+                  }`}>
+                    {reconciliacaoSelecionada === candidato.id && (
+                      <CheckCircle className="w-4 h-4 text-white" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-3 pt-4 border-t border-dark-700">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => handleReconciliacaoSelecionada(null)}
+              disabled={processing}
+            >
+              Criar Novo Lançamento
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                if (reconciliacaoSelecionada) {
+                  handleReconciliacaoSelecionada(reconciliacaoSelecionada)
+                }
+              }}
+              disabled={!reconciliacaoSelecionada || processing}
+            >
+              {processing ? 'Processando...' : 'Reconciliar Selecionado'}
+            </Button>
+          </div>
         </div>
       </Modal>
     </div>

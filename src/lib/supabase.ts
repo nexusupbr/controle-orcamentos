@@ -18,6 +18,8 @@ export interface Orcamento {
   status: 'Fechado' | 'Perdido' | 'Análise'
   parcelado: boolean
   parcelas: number
+  valores_parcelas: number[] | null  // Array com valores personalizados de cada parcela
+  datas_parcelas: string[] | null    // Array com datas de vencimento de cada parcela
   observacoes: string
   nota_fiscal: boolean
   created_at?: string
@@ -344,10 +346,11 @@ export async function deleteObraMaterial(id: number): Promise<void> {
 // ==================== USUÁRIOS / AUTENTICAÇÃO ====================
 
 export async function loginUsuario(email: string, senha: string): Promise<Usuario | null> {
+  // Usa ilike para comparação case-insensitive do email
   const { data, error } = await supabase
     .from('usuarios')
     .select('*')
-    .eq('email', email)
+    .ilike('email', email.trim())
     .eq('senha', senha)
     .single()
 

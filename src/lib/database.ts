@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { normalizeUnidade } from './utils'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://yhiiupamxdjmnrktkjku.supabase.co'
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InloaWl1cGFteGRqbW5ya3Rramt1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg0ODg2NzUsImV4cCI6MjA4NDA2NDY3NX0._QjYtYAlypJdursHe0-rPz14QOT4NNP2EklqcJ6TpkI'
@@ -248,11 +249,9 @@ export interface LancamentoFinanceiro {
   subcategoria: string | null
   com_nota_fiscal: boolean
   valor: number
-  data: string
   data_lancamento: string
   data_competencia: string | null
   conta_id: number | null
-  conta_bancaria_id: number | null
   forma_pagamento: 'dinheiro' | 'pix' | 'debito' | 'credito' | 'boleto' | 'transferencia' | 'cheque' | null
   cliente_id: number | null
   fornecedor_id: number | null
@@ -260,24 +259,34 @@ export interface LancamentoFinanceiro {
   nota_fiscal_saida_id: number | null
   venda_id: number | null
   orcamento_id: number | null
-  conta_pagar_id: number | null
-  conta_receber_id: number | null
   cte_id: number | null
   descricao: string | null
   observacao: string | null
-  observacoes: string | null
-  numero_nf: string | null
   ofx_fitid: string | null
-  identificador_externo: string | null
   ofx_data_importacao: string | null
   conciliado: boolean
   usuario_id: number | null
   created_at?: string
   updated_at?: string
+  // Campos de agrupamento de duplicados
+  grupo_id?: string | null          // UUID para identificar o grupo
+  grupo_principal_id?: number | null // ID do lançamento principal do grupo
+  data_nota?: string | null         // Data do documento fiscal (DD/MM/AAAA)
+  // Campos virtuais (calculados)
+  grupo_total_itens?: number        // Quantidade de itens no grupo (view)
+  grupo_possui_nf?: boolean         // Se algum item do grupo tem NF (view)
+  is_grupo_principal?: boolean      // Se este é o lançamento principal (virtual)
+  itens_grupo?: LancamentoFinanceiro[] // Itens agrupados (carregado dinamicamente)
+  // Campos de join (virtuais)
   categoria?: CategoriaFinanceira
   conta?: ContaBancaria
   cliente?: Cliente
   fornecedor?: Fornecedor
+  // Aliases para compatibilidade de leitura (virtuais, não existem no banco)
+  data?: string
+  conta_bancaria_id?: number | null
+  numero_nf?: string | null
+  observacoes?: string | null
 }
 
 export type LancamentoFinanceiroInput = Partial<Omit<LancamentoFinanceiro, 'id' | 'created_at' | 'updated_at' | 'categoria' | 'conta' | 'cliente' | 'fornecedor'>>
@@ -460,7 +469,6 @@ export async function fetchProdutos(): Promise<Produto[]> {
       categoria:categorias(*),
       fornecedor:fornecedores(*)
     `)
-    .eq('ativo', true)
     .order('nome')
 
   if (error) throw error
@@ -487,7 +495,6 @@ export async function fetchProdutoByNome(nome: string): Promise<Produto | null> 
     .from('produtos')
     .select('*')
     .ilike('nome', nome)
-    .eq('ativo', true)
     .single()
 
   if (error) return null
@@ -499,11 +506,268 @@ export async function fetchProdutoByCodigo(codigo: string): Promise<Produto | nu
     .from('produtos')
     .select('*')
     .eq('codigo', codigo)
-    .eq('ativo', true)
     .single()
 
   if (error) return null
   return data
+}
+
+// Busca de produtos para seleção (substituição em importação XML)
+export interface ProdutoSearchResult {
+  id: number
+  nome: string
+  codigo: string | null
+  codigo_barras: string | null
+  gtin_ean: string | null
+  valor_custo: number
+  valor_venda: number
+  quantidade_estoque: number
+  unidade: string
+}
+
+export async function searchProdutos(query: string, limit: number = 15): Promise<ProdutoSearchResult[]> {
+  const q = query.trim()
+  console.log('[searchProdutos] Query recebida:', q)
+  
+  if (!q || q.length < 2) {
+    console.log('[searchProdutos] Query muito curta, retornando vazio')
+    return []
+  }
+
+  // Construir busca OR para todos os campos relevantes
+  // Usar wildcard %q% para busca parcial
+  const orFilter = `nome.ilike.%${q}%,codigo.ilike.%${q}%,codigo_barras.ilike.%${q}%,gtin_ean.ilike.%${q}%`
+  
+  console.log('[searchProdutos] Filtro OR:', orFilter)
+
+  const { data, error } = await supabase
+    .from('produtos')
+    .select('id, nome, codigo, codigo_barras, gtin_ean, valor_custo, valor_venda, quantidade_estoque, unidade')
+    .or(orFilter)
+    .order('nome')
+    .limit(limit)
+
+  if (error) {
+    console.error('[searchProdutos] Erro Supabase:', error)
+    return []
+  }
+
+  console.log('[searchProdutos] Resultados encontrados:', data?.length || 0)
+  if (data && data.length > 0) {
+    console.log('[searchProdutos] Primeiro resultado:', data[0].nome)
+  }
+
+  return data || []
+}
+
+// ==================== FUNÇÕES PARA IMPORTAÇÃO XML SIMPLIFICADA ====================
+
+/**
+ * Interface do item da NF para importação
+ */
+export interface ItemNFImportacao {
+  codigo: string           // cProd do XML
+  descricao: string        // xProd do XML
+  ncm: string
+  cfop: string
+  unidade: string
+  quantidade: number
+  valorUnitario: number    // vUnCom do XML
+  valorTotal: number
+  gtin?: string            // cEAN do XML (código de barras)
+}
+
+/**
+ * Resultado do upsert de produto
+ */
+export interface UpsertProdutoResult {
+  produtoId: number
+  acao: 'criado' | 'atualizado'
+  produto: Produto
+}
+
+/**
+ * Arredonda para 2 casas decimais (evita erros de ponto flutuante)
+ */
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/**
+ * Busca produto existente por prioridade:
+ * 1. GTIN/EAN (código de barras do XML)
+ * 2. Código interno (cProd)
+ * 3. Nome exato (ilike)
+ */
+export async function findProdutoExistente(item: ItemNFImportacao): Promise<Produto | null> {
+  // 1. Tentar por GTIN/EAN (se fornecido e não for vazio/zeros)
+  if (item.gtin && item.gtin.length > 3 && !/^0+$/.test(item.gtin)) {
+    const { data: byGtin } = await supabase
+      .from('produtos')
+      .select('*')
+      .or(`gtin_ean.eq.${item.gtin},codigo_barras.eq.${item.gtin}`)
+      .limit(1)
+      .single()
+    
+    if (byGtin) {
+      console.log('[findProdutoExistente] Encontrado por GTIN:', byGtin.nome)
+      return byGtin
+    }
+  }
+
+  // 2. Tentar por código interno
+  if (item.codigo && item.codigo.trim()) {
+    const { data: byCodigo } = await supabase
+      .from('produtos')
+      .select('*')
+      .eq('codigo', item.codigo.trim())
+      .limit(1)
+      .single()
+    
+    if (byCodigo) {
+      console.log('[findProdutoExistente] Encontrado por código:', byCodigo.nome)
+      return byCodigo
+    }
+  }
+
+  // 3. Tentar por nome exato (case-insensitive)
+  if (item.descricao && item.descricao.trim()) {
+    const { data: byNome } = await supabase
+      .from('produtos')
+      .select('*')
+      .ilike('nome', item.descricao.trim())
+      .limit(1)
+      .single()
+    
+    if (byNome) {
+      console.log('[findProdutoExistente] Encontrado por nome:', byNome.nome)
+      return byNome
+    }
+  }
+
+  console.log('[findProdutoExistente] Produto não encontrado:', item.descricao)
+  return null
+}
+
+/**
+ * Cria ou atualiza produto baseado no item da NF
+ * - Se existir: atualiza custo e opcionalmente preço de venda
+ * - Se não existir: cria novo produto
+ * - Sempre incrementa estoque via movimentação (separado)
+ */
+export async function upsertProdutoPorImportacao(
+  item: ItemNFImportacao,
+  atualizarVenda: boolean,
+  fornecedorId?: number
+): Promise<UpsertProdutoResult> {
+  const existente = await findProdutoExistente(item)
+  const novoCusto = round2(item.valorUnitario)
+  
+  if (existente) {
+    // === ATUALIZAR PRODUTO EXISTENTE ===
+    const updateData: Partial<Produto> = {
+      valor_custo: novoCusto,
+      custo_ultima_compra: novoCusto,
+      custo_medio: novoCusto,
+    }
+    
+    // Se tem código no XML e o produto não tem, atualizar
+    if (item.codigo && !existente.codigo) {
+      updateData.codigo = item.codigo
+    }
+    
+    // Se atualizarVenda = true, valor_venda = valor_custo (sem margem)
+    if (atualizarVenda) {
+      updateData.valor_venda = novoCusto
+      updateData.margem_lucro = 0
+    }
+    
+    console.log('[upsertProdutoPorImportacao] Atualizando produto:', {
+      id: existente.id,
+      nome: existente.nome,
+      updateData,
+      atualizarVenda
+    })
+    
+    const { data: updated, error } = await supabase
+      .from('produtos')
+      .update({ ...updateData, updated_at: new Date().toISOString() })
+      .eq('id', existente.id)
+      .select()
+      .single()
+    
+    if (error) throw new Error(`Erro ao atualizar produto: ${error.message}`)
+    
+    return {
+      produtoId: existente.id,
+      acao: 'atualizado',
+      produto: updated
+    }
+  } else {
+    // === CRIAR NOVO PRODUTO ===
+    const novoProduto: ProdutoInput = {
+      codigo: item.codigo || null,
+      nome: item.descricao,
+      ncm: item.ncm || null,
+      cfop: item.cfop || null,
+      unidade: normalizeUnidade(item.unidade),
+      valor_custo: novoCusto,
+      valor_venda: atualizarVenda ? novoCusto : novoCusto, // Sempre inicia igual ao custo
+      custo_medio: novoCusto,
+      custo_ultima_compra: novoCusto,
+      margem_lucro: 0,
+      quantidade_estoque: 0, // Estoque será incrementado pela movimentação
+      fornecedor_id: fornecedorId,
+      classificacao_fiscal: '07',
+      ativo: true
+    }
+    
+    // Se tem GTIN válido, salvar
+    if (item.gtin && item.gtin.length > 3 && !/^0+$/.test(item.gtin)) {
+      novoProduto.gtin_ean = item.gtin
+      novoProduto.codigo_barras = item.gtin
+    }
+    
+    console.log('[upsertProdutoPorImportacao] Criando novo produto:', novoProduto)
+    
+    const { data: created, error } = await supabase
+      .from('produtos')
+      .insert([novoProduto])
+      .select()
+      .single()
+    
+    if (error) throw new Error(`Erro ao criar produto: ${error.message}`)
+    
+    return {
+      produtoId: created.id,
+      acao: 'criado',
+      produto: created
+    }
+  }
+}
+
+/**
+ * Incrementa estoque do produto
+ */
+export async function incrementarEstoqueProduto(produtoId: number, quantidade: number): Promise<void> {
+  const { data: produto, error: fetchError } = await supabase
+    .from('produtos')
+    .select('quantidade_estoque')
+    .eq('id', produtoId)
+    .single()
+  
+  if (fetchError) throw new Error(`Erro ao buscar estoque: ${fetchError.message}`)
+  
+  const novoEstoque = round2((produto?.quantidade_estoque || 0) + quantidade)
+  
+  const { error: updateError } = await supabase
+    .from('produtos')
+    .update({ quantidade_estoque: novoEstoque, updated_at: new Date().toISOString() })
+    .eq('id', produtoId)
+  
+  if (updateError) throw new Error(`Erro ao atualizar estoque: ${updateError.message}`)
+  
+  console.log('[incrementarEstoqueProduto] Estoque atualizado:', { produtoId, quantidade, novoEstoque })
 }
 
 export async function checkProdutoDuplicado(nome: string, excludeId?: number): Promise<boolean> {
@@ -511,7 +775,6 @@ export async function checkProdutoDuplicado(nome: string, excludeId?: number): P
     .from('produtos')
     .select('id')
     .ilike('nome', nome)
-    .eq('ativo', true)
 
   if (excludeId) {
     query = query.neq('id', excludeId)
@@ -528,10 +791,16 @@ export async function createProduto(produto: ProdutoInput): Promise<Produto> {
       throw new Error('Já existe um produto com este nome')
     }
   }
+  
+  // Normalizar unidade antes de salvar
+  const produtoNormalizado = {
+    ...produto,
+    unidade: normalizeUnidade(produto.unidade)
+  }
 
   const { data, error } = await supabase
     .from('produtos')
-    .insert([produto])
+    .insert([produtoNormalizado])
     .select()
     .single()
 
@@ -546,10 +815,15 @@ export async function updateProduto(id: number, updates: ProdutoInput): Promise<
       throw new Error('Já existe um produto com este nome')
     }
   }
+  
+  // Normalizar unidade se presente no update
+  const updatesNormalizado = updates.unidade 
+    ? { ...updates, unidade: normalizeUnidade(updates.unidade) }
+    : updates
 
   const { data, error } = await supabase
     .from('produtos')
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update({ ...updatesNormalizado, updated_at: new Date().toISOString() })
     .eq('id', id)
     .select()
     .single()
@@ -559,9 +833,21 @@ export async function updateProduto(id: number, updates: ProdutoInput): Promise<
 }
 
 export async function deleteProduto(id: number): Promise<void> {
+  // Primeiro verificar se há movimentações vinculadas
+  const { data: movimentacoes } = await supabase
+    .from('movimentacoes_estoque')
+    .select('id')
+    .eq('produto_id', id)
+    .limit(1)
+
+  if (movimentacoes && movimentacoes.length > 0) {
+    // Se houver movimentações, deletar também
+    await supabase.from('movimentacoes_estoque').delete().eq('produto_id', id)
+  }
+
   const { error } = await supabase
     .from('produtos')
-    .update({ ativo: false, updated_at: new Date().toISOString() })
+    .delete()
     .eq('id', id)
 
   if (error) throw new Error(error.message)
@@ -604,7 +890,6 @@ export async function fetchFornecedores(): Promise<Fornecedor[]> {
   const { data, error } = await supabase
     .from('fornecedores')
     .select('*')
-    .eq('ativo', true)
     .order('razao_social')
 
   if (error) throw error
@@ -657,7 +942,7 @@ export async function updateFornecedor(id: number, updates: FornecedorInput): Pr
 export async function deleteFornecedor(id: number): Promise<void> {
   const { error } = await supabase
     .from('fornecedores')
-    .update({ ativo: false, updated_at: new Date().toISOString() })
+    .delete()
     .eq('id', id)
 
   if (error) throw new Error(error.message)
@@ -669,7 +954,6 @@ export async function fetchClientes(tipoCadastro?: 'cliente' | 'fornecedor' | 'a
   let query = supabase
     .from('clientes')
     .select('*')
-    .eq('ativo', true)
   
   if (tipoCadastro) {
     if (tipoCadastro === 'cliente') {
@@ -738,9 +1022,12 @@ export async function updateCliente(id: number, updates: ClienteInput): Promise<
 }
 
 export async function deleteCliente(id: number): Promise<void> {
+  // Primeiro deletar endereços vinculados
+  await supabase.from('enderecos_cliente').delete().eq('cliente_id', id)
+
   const { error } = await supabase
     .from('clientes')
-    .update({ ativo: false, updated_at: new Date().toISOString() })
+    .delete()
     .eq('id', id)
 
   if (error) throw new Error(error.message)
@@ -753,7 +1040,6 @@ export async function fetchEnderecosCliente(clienteId: number): Promise<Endereco
     .from('enderecos_cliente')
     .select('*')
     .eq('cliente_id', clienteId)
-    .eq('ativo', true)
     .order('principal', { ascending: false })
 
   if (error) throw error
@@ -786,7 +1072,7 @@ export async function updateEnderecoCliente(id: number, updates: Partial<Enderec
 export async function deleteEnderecoCliente(id: number): Promise<void> {
   const { error } = await supabase
     .from('enderecos_cliente')
-    .update({ ativo: false })
+    .delete()
     .eq('id', id)
 
   if (error) throw new Error(error.message)
@@ -862,7 +1148,6 @@ export async function fetchCategoriasFinanceiras(tipo?: string): Promise<Categor
   let query = supabase
     .from('categorias_financeiras')
     .select('*')
-    .eq('ativo', true)
     .order('nome')
 
   if (tipo) {
@@ -885,11 +1170,82 @@ export async function createCategoriaFinanceira(categoria: Partial<CategoriaFina
   return data
 }
 
+export async function updateCategoriaFinanceira(id: number, updates: Partial<CategoriaFinanceira>): Promise<CategoriaFinanceira> {
+  const { data, error } = await supabase
+    .from('categorias_financeiras')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw new Error(error.message)
+  return data
+}
+
+export async function deleteCategoriaFinanceira(id: number): Promise<{ success: boolean; message: string }> {
+  // Verificar se está sendo usada em lançamentos financeiros
+  const { data: lancamentos } = await supabase
+    .from('lancamentos_financeiros')
+    .select('id')
+    .eq('categoria_id', id)
+    .limit(1)
+
+  if (lancamentos && lancamentos.length > 0) {
+    return { 
+      success: false, 
+      message: 'Esta categoria está sendo usada em lançamentos financeiros e não pode ser excluída.' 
+    }
+  }
+
+  // Verificar se está sendo usada em contas a pagar
+  const { data: contasPagar } = await supabase
+    .from('contas_pagar')
+    .select('id')
+    .eq('categoria_id', id)
+    .limit(1)
+
+  if (contasPagar && contasPagar.length > 0) {
+    return { 
+      success: false, 
+      message: 'Esta categoria está sendo usada em contas a pagar e não pode ser excluída.' 
+    }
+  }
+
+  // Verificar se está sendo usada em contas a receber (se existir)
+  try {
+    const { data: contasReceber } = await supabase
+      .from('contas_receber')
+      .select('id')
+      .eq('categoria_id', id)
+      .limit(1)
+
+    if (contasReceber && contasReceber.length > 0) {
+      return { 
+        success: false, 
+        message: 'Esta categoria está sendo usada em contas a receber e não pode ser excluída.' 
+      }
+    }
+  } catch {
+    // Tabela pode não existir, ignorar
+  }
+
+  // Excluir categoria
+  const { error } = await supabase
+    .from('categorias_financeiras')
+    .delete()
+    .eq('id', id)
+
+  if (error) {
+    return { success: false, message: `Erro ao excluir: ${error.message}` }
+  }
+
+  return { success: true, message: 'Categoria excluída com sucesso.' }
+}
+
 export async function fetchContasBancarias(): Promise<ContaBancaria[]> {
   const { data, error } = await supabase
     .from('contas_bancarias')
     .select('*')
-    .eq('ativo', true)
     .order('nome')
 
   if (error) throw error
@@ -992,11 +1348,187 @@ export async function deleteLancamentoFinanceiro(id: number): Promise<void> {
   if (error) throw new Error(error.message)
 }
 
+// Função para verificar se lançamento pode ser excluído
+export async function verificarExclusaoLancamento(id: number): Promise<{ canDelete: boolean; reason?: string }> {
+  const { data: lancamento, error } = await supabase
+    .from('lancamentos_financeiros')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (error || !lancamento) {
+    return { canDelete: false, reason: 'Lançamento não encontrado' }
+  }
+
+  // Debug logs temporários
+  console.log('[verificarExclusaoLancamento] ID:', id)
+  console.log('[verificarExclusaoLancamento] venda_id:', lancamento.venda_id, typeof lancamento.venda_id)
+  console.log('[verificarExclusaoLancamento] nota_fiscal_entrada_id:', lancamento.nota_fiscal_entrada_id, typeof lancamento.nota_fiscal_entrada_id)
+  console.log('[verificarExclusaoLancamento] conciliado:', lancamento.conciliado)
+
+  // Não permitir excluir se conciliado
+  if (lancamento.conciliado) {
+    return { canDelete: false, reason: 'Lançamento já está conciliado. Desfaça a conciliação antes de excluir.' }
+  }
+
+  // Normalizar valores: tratar 0, "0", "null", null, undefined como null
+  const vendaId = (lancamento.venda_id && lancamento.venda_id !== 0 && lancamento.venda_id !== '0' && lancamento.venda_id !== 'null') 
+    ? lancamento.venda_id 
+    : null
+  const notaFiscalEntradaId = (lancamento.nota_fiscal_entrada_id && lancamento.nota_fiscal_entrada_id !== 0 && lancamento.nota_fiscal_entrada_id !== '0' && lancamento.nota_fiscal_entrada_id !== 'null') 
+    ? lancamento.nota_fiscal_entrada_id 
+    : null
+
+  console.log('[verificarExclusaoLancamento] vendaId normalizado:', vendaId)
+  console.log('[verificarExclusaoLancamento] notaFiscalEntradaId normalizado:', notaFiscalEntradaId)
+
+  // Verificar se venda realmente existe no banco
+  if (vendaId) {
+    const { data: venda } = await supabase
+      .from('vendas')
+      .select('id')
+      .eq('id', vendaId)
+      .single()
+
+    console.log('[verificarExclusaoLancamento] Venda encontrada:', venda)
+
+    if (venda) {
+      return { canDelete: false, reason: 'Lançamento vinculado a uma venda. Exclua a venda primeiro.' }
+    }
+    // Se não encontrou a venda, é vínculo órfão - permitir excluir
+    console.log('[verificarExclusaoLancamento] Vínculo órfão de venda_id detectado, permitindo exclusão')
+  }
+
+  // Verificar se NF de entrada realmente existe no banco
+  if (notaFiscalEntradaId) {
+    const { data: nf } = await supabase
+      .from('notas_fiscais_entrada')
+      .select('id')
+      .eq('id', notaFiscalEntradaId)
+      .single()
+
+    console.log('[verificarExclusaoLancamento] NF Entrada encontrada:', nf)
+
+    if (nf) {
+      return { canDelete: false, reason: 'Lançamento vinculado a uma NF de entrada. Exclua a NF primeiro.' }
+    }
+    // Se não encontrou a NF, é vínculo órfão - permitir excluir
+    console.log('[verificarExclusaoLancamento] Vínculo órfão de nota_fiscal_entrada_id detectado, permitindo exclusão')
+  }
+
+  return { canDelete: true }
+}
+
+// ==================== FUNÇÕES - EXCLUSÃO CASCATA NF ENTRADA ====================
+
+export async function deleteNotaFiscalEntradaCascade(notaId: number): Promise<{ success: boolean; message: string }> {
+  try {
+    // 1. Buscar a nota para verificar se existe
+    const { data: nota, error: notaError } = await supabase
+      .from('notas_fiscais_entrada')
+      .select('*')
+      .eq('id', notaId)
+      .single()
+
+    if (notaError || !nota) {
+      return { success: false, message: 'Nota fiscal não encontrada' }
+    }
+
+    // 2. Buscar movimentações de estoque vinculadas
+    const { data: movimentacoes } = await supabase
+      .from('movimentacoes_estoque')
+      .select('id, produto_id, quantidade, tipo')
+      .eq('nota_fiscal_id', notaId)
+
+    // 3. Reverter o estoque das movimentações (subtrair o que foi adicionado)
+    if (movimentacoes && movimentacoes.length > 0) {
+      for (const mov of movimentacoes) {
+        if (mov.tipo === 'entrada') {
+          // Se foi entrada, diminuir o estoque - fazer update direto
+          const { data: prod } = await supabase
+            .from('produtos')
+            .select('quantidade_estoque')
+            .eq('id', mov.produto_id)
+            .single()
+          
+          if (prod) {
+            await supabase
+              .from('produtos')
+              .update({ quantidade_estoque: Math.max(0, prod.quantidade_estoque - mov.quantidade) })
+              .eq('id', mov.produto_id)
+          }
+        }
+      }
+
+      // 4. Deletar movimentações de estoque
+      const { error: movError } = await supabase
+        .from('movimentacoes_estoque')
+        .delete()
+        .eq('nota_fiscal_id', notaId)
+
+      if (movError) {
+        console.error('Erro ao deletar movimentações:', movError)
+      }
+    }
+
+    // 5. Deletar lançamentos financeiros vinculados
+    const { error: lancError } = await supabase
+      .from('lancamentos_financeiros')
+      .delete()
+      .eq('nota_fiscal_entrada_id', notaId)
+
+    if (lancError) {
+      console.error('Erro ao deletar lançamentos:', lancError)
+    }
+
+    // 6. Deletar contas a pagar vinculadas (usando nota_fiscal_id)
+    const { error: contasError } = await supabase
+      .from('contas_pagar')
+      .delete()
+      .eq('nota_fiscal_id', notaId)
+
+    if (contasError) {
+      console.error('Erro ao deletar contas a pagar:', contasError)
+    }
+
+    // 7. Deletar itens da nota fiscal
+    const { error: itensError } = await supabase
+      .from('itens_nota_entrada')
+      .delete()
+      .eq('nota_fiscal_id', notaId)
+
+    if (itensError) {
+      console.error('Erro ao deletar itens da nota:', itensError)
+    }
+
+    // 8. Finalmente, deletar a nota fiscal
+    const { error: deleteError } = await supabase
+      .from('notas_fiscais_entrada')
+      .delete()
+      .eq('id', notaId)
+
+    if (deleteError) {
+      return { success: false, message: 'Erro ao excluir nota fiscal: ' + deleteError.message }
+    }
+
+    return { 
+      success: true, 
+      message: `Nota fiscal excluída com sucesso. Removidos: ${movimentacoes?.length || 0} movimentações de estoque.` 
+    }
+  } catch (err) {
+    console.error('Erro na exclusão cascata:', err)
+    return { success: false, message: 'Erro ao processar exclusão: ' + (err instanceof Error ? err.message : 'Erro desconhecido') }
+  }
+}
+
 export async function checkOFXDuplicado(fitid: string, contaId?: number): Promise<boolean> {
+  // Limpar o fitid de qualquer caractere especial
+  const cleanFitid = fitid.replace(/[<>\/]/g, '').trim()
+  
   let query = supabase
     .from('lancamentos_financeiros')
     .select('id')
-    .or(`ofx_fitid.eq.${fitid},identificador_externo.eq.${fitid}`)
+    .eq('ofx_fitid', cleanFitid)
   
   if (contaId) {
     query = query.eq('conta_id', contaId)
@@ -1004,6 +1536,1257 @@ export async function checkOFXDuplicado(fitid: string, contaId?: number): Promis
   
   const { data } = await query
   return (data?.length || 0) > 0
+}
+
+// ==================== FUNÇÕES - SIMILARIDADE E DEDUPLICAÇÃO ====================
+
+/**
+ * Normaliza uma string para comparação de similaridade
+ * Remove acentos, pontuação, tokens comuns (nf, nota, códigos alfanuméricos longos)
+ */
+export function normalizarDescricao(descricao: string): string {
+  if (!descricao) return ''
+  
+  return descricao
+    // PRIMEIRO: Separar camelCase e PascalCase ANTES de toLowerCase (MaosNaObra -> Maos Na Obra)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    // Separar letras de números (Agro123 -> Agro 123)
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([a-zA-Z])/g, '$1 $2')
+    // DEPOIS: Converter para minúsculas
+    .toLowerCase()
+    // Remover acentos
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    // Remover pontuação e caracteres especiais
+    .replace(/[.,;:!?@#$%&*()[\]{}<>\/\\|`~^"'=-]/g, ' ')
+    // Remover APENAS tokens muito genéricos (prefixos de transação)
+    .replace(/\b(compras|nacionais|internacionais|pix|ted|doc|parcela|ref|nr|num|numero|pagamento|debito|credito|liquidacao|boleto|tarifa)\b/gi, '')
+    // Remover APENAS códigos alfanuméricos que começam com letras e têm números (ex: VE0828256)
+    .replace(/\b[a-z]{1,3}\d{5,}\b/gi, '')
+    // Remover sufixos empresariais comuns
+    .replace(/\b(ltda|me|eireli|sa|epp|ss|s\/s)\b/gi, '')
+    // Remover nomes de cidades/estados comuns
+    .replace(/\b(sinop|cuiaba|brasilia|sao paulo|rio de janeiro|mt|sp|rj|mg|br|brasil)\b/gi, '')
+    // Colapsar espaços múltiplos
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Extrai tokens de uma string normalizada
+ */
+export function extrairTokens(texto: string): Set<string> {
+  const normalizado = normalizarDescricao(texto)
+  const tokens = normalizado.split(' ').filter(t => t.length > 2)
+  return new Set(tokens)
+}
+
+/**
+ * Calcula similaridade de Jaccard entre dois conjuntos de tokens
+ * Retorna valor entre 0 e 1
+ */
+export function calcularSimilaridadeJaccard(tokens1: Set<string>, tokens2: Set<string>): number {
+  if (tokens1.size === 0 && tokens2.size === 0) return 0
+  if (tokens1.size === 0 || tokens2.size === 0) return 0
+  
+  const arr1 = Array.from(tokens1)
+  const arr2 = Array.from(tokens2)
+  const intersecao = new Set(arr1.filter(t => tokens2.has(t)))
+  const uniao = new Set([...arr1, ...arr2])
+  
+  return intersecao.size / uniao.size
+}
+
+/**
+ * Interface para resultado de busca de lançamentos semelhantes
+ */
+export interface LancamentoSemelhante {
+  id: number
+  data_lancamento: string
+  descricao: string | null
+  valor: number
+  tipo: string
+  categoria_id: number | null
+  conta_id: number | null
+  categoria_nome?: string
+  conta_nome?: string
+  score: number
+}
+
+/**
+ * Busca lançamentos semelhantes no banco de dados
+ * @param params Parâmetros de busca (data_lancamento, valor, descricao)
+ * @param limite Número máximo de resultados (default: 5)
+ * @param limiarSimilaridade Score mínimo de similaridade (default: 0.3)
+ */
+export async function buscarLancamentosSemelhantes(params: {
+  data_lancamento: string
+  valor: number
+  descricao: string
+}, limite: number = 5, limiarSimilaridade: number = 0.3): Promise<LancamentoSemelhante[]> {
+  const { data_lancamento, valor, descricao } = params
+  
+  // Não buscar se dados insuficientes
+  if (!data_lancamento || !valor || !descricao || descricao.length < 3) {
+    return []
+  }
+  
+  // Calcular intervalo de datas (±3 dias)
+  const dataBase = new Date(data_lancamento)
+  const dataInicio = new Date(dataBase)
+  dataInicio.setDate(dataInicio.getDate() - 3)
+  const dataFim = new Date(dataBase)
+  dataFim.setDate(dataFim.getDate() + 3)
+  
+  // Converter valor para centavos para comparação exata
+  const valorCentavos = Math.round(valor * 100)
+  const toleranciaValor = 0.01 // R$ 0,01 de tolerância
+  
+  try {
+    // Query pré-filtrada por valor e data
+    const { data, error } = await supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        id,
+        data_lancamento,
+        descricao,
+        valor,
+        tipo,
+        categoria_id,
+        conta_id,
+        categoria:categorias_financeiras(nome),
+        conta:contas_bancarias(nome)
+      `)
+      .gte('data_lancamento', dataInicio.toISOString().split('T')[0])
+      .lte('data_lancamento', dataFim.toISOString().split('T')[0])
+      .gte('valor', valor - toleranciaValor)
+      .lte('valor', valor + toleranciaValor)
+      .limit(50) // Limite de segurança para pós-processamento
+    
+    if (error) {
+      console.error('Erro ao buscar lançamentos semelhantes:', error)
+      return []
+    }
+    
+    if (!data || data.length === 0) {
+      return []
+    }
+    
+    // Calcular similaridade textual em JS
+    const tokensBusca = extrairTokens(descricao)
+    
+    const resultados: LancamentoSemelhante[] = data
+      .map(lanc => {
+        const tokensLanc = extrairTokens(lanc.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensBusca, tokensLanc)
+        
+        return {
+          id: lanc.id,
+          data_lancamento: lanc.data_lancamento,
+          descricao: lanc.descricao,
+          valor: lanc.valor,
+          tipo: lanc.tipo,
+          categoria_id: lanc.categoria_id,
+          conta_id: lanc.conta_id,
+          categoria_nome: (lanc.categoria as any)?.nome || undefined,
+          conta_nome: (lanc.conta as any)?.nome || undefined,
+          score
+        }
+      })
+      .filter(r => r.score >= limiarSimilaridade)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limite)
+    
+    return resultados
+  } catch (err) {
+    console.error('Erro ao buscar lançamentos semelhantes:', err)
+    return []
+  }
+}
+
+/**
+ * Gera fingerprint para deduplicação de transações OFX
+ * Útil quando não há FITID confiável
+ */
+export function gerarFingerprintOFX(params: {
+  contaId: number
+  data: string
+  valor: number
+  descricao: string
+}): string {
+  const { contaId, data, valor, descricao } = params
+  
+  // Normalizar data para YYYY-MM-DD
+  const dataFormatada = data.split('T')[0]
+  
+  // Valor em centavos com sinal
+  const valorCentavos = Math.round(valor * 100)
+  
+  // Descrição normalizada
+  const descNormalizada = normalizarDescricao(descricao)
+  
+  // Gerar hash simples combinando os campos
+  const chave = `${contaId}|${dataFormatada}|${valorCentavos}|${descNormalizada}`
+  
+  // Hash simples usando djb2
+  let hash = 5381
+  for (let i = 0; i < chave.length; i++) {
+    hash = ((hash << 5) + hash) + chave.charCodeAt(i)
+    hash = hash >>> 0 // Converter para unsigned
+  }
+  
+  return hash.toString(36)
+}
+
+/**
+ * Verifica duplicação OFX usando FITID ou fingerprint
+ * Retorna objeto com informações de duplicação
+ */
+export async function checkOFXDuplicadoAvancado(params: {
+  fitid?: string | null
+  contaId: number
+  data: string
+  valor: number
+  descricao: string
+}): Promise<{
+  duplicado: boolean
+  metodo: 'fitid' | 'fingerprint' | 'valor_data_desc' | 'nenhum'
+  lancamentoExistenteId?: number
+}> {
+  const { fitid, contaId, data, valor, descricao } = params
+  
+  // 1. Tentar por FITID primeiro (mais confiável)
+  if (fitid && fitid.trim()) {
+    const cleanFitid = fitid.replace(/[<>\/]/g, '').trim()
+    
+    const { data: resultFitid } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id')
+      .eq('ofx_fitid', cleanFitid)
+      .eq('conta_id', contaId)
+      .limit(1)
+    
+    if (resultFitid && resultFitid.length > 0) {
+      return {
+        duplicado: true,
+        metodo: 'fitid',
+        lancamentoExistenteId: resultFitid[0].id
+      }
+    }
+  }
+  
+  // 2. Se não encontrou por FITID, tentar por valor + data ±2 dias + descrição similar
+  const dataBase = new Date(data)
+  const dataInicio = new Date(dataBase)
+  dataInicio.setDate(dataInicio.getDate() - 2)
+  const dataFim = new Date(dataBase)
+  dataFim.setDate(dataFim.getDate() + 2)
+  
+  const toleranciaValor = 0.01
+  
+  const { data: resultValorData } = await supabase
+    .from('lancamentos_financeiros')
+    .select('id, descricao')
+    .eq('conta_id', contaId)
+    .gte('data_lancamento', dataInicio.toISOString().split('T')[0])
+    .lte('data_lancamento', dataFim.toISOString().split('T')[0])
+    .gte('valor', Math.abs(valor) - toleranciaValor)
+    .lte('valor', Math.abs(valor) + toleranciaValor)
+    .limit(20)
+  
+  if (resultValorData && resultValorData.length > 0) {
+    // Verificar similaridade de descrição
+    const tokensBusca = extrairTokens(descricao)
+    
+    for (const lanc of resultValorData) {
+      const tokensLanc = extrairTokens(lanc.descricao || '')
+      const score = calcularSimilaridadeJaccard(tokensBusca, tokensLanc)
+      
+      // Se similaridade > 0.6, considerar duplicado
+      if (score >= 0.6) {
+        return {
+          duplicado: true,
+          metodo: 'valor_data_desc',
+          lancamentoExistenteId: lanc.id
+        }
+      }
+    }
+  }
+  
+  return {
+    duplicado: false,
+    metodo: 'nenhum'
+  }
+}
+
+/**
+ * Resultado da importação OFX
+ */
+export interface ResultadoImportacaoOFX {
+  importados: number
+  duplicadosFitid: number
+  duplicadosFingerprint: number
+  erros: number
+  detalhes: Array<{
+    descricao: string
+    status: 'importado' | 'duplicado_fitid' | 'duplicado_fingerprint' | 'erro'
+    mensagem?: string
+  }>
+}
+
+// ==================== FUNÇÕES - RECONCILIAÇÃO NF COM OFX ====================
+
+/**
+ * Interface para candidato de reconciliação
+ */
+export interface CandidatoReconciliacao {
+  id: number
+  data_lancamento: string
+  descricao: string | null
+  valor: number
+  tipo: string
+  categoria_id: number | null
+  conta_id: number | null
+  conciliado: boolean
+  com_nota_fiscal: boolean
+  nota_fiscal_entrada_id: number | null
+  ofx_fitid: string | null
+  score: number
+  diferencaDias: number
+}
+
+/**
+ * Busca lançamentos existentes (provavelmente OFX) para reconciliar com NF
+ * Usado quando importa XML de NF e marca "Lançar no caixa"
+ * 
+ * @param params Dados da NF para buscar match
+ * @returns Lista de candidatos ordenados por score (melhor primeiro)
+ */
+export async function buscarLancamentoParaReconciliar(params: {
+  data_nf: string       // Data da NF (YYYY-MM-DD)
+  valor: number         // Valor da NF
+  descricao_xml: string // Descrição do XML (ex: "NF 876 - MAOS NA OBRA LTDA")
+  fornecedor_nome?: string // Nome do fornecedor para aumentar match
+}): Promise<{ candidatos: CandidatoReconciliacao[], melhorMatch: CandidatoReconciliacao | null }> {
+  const { data_nf, valor, descricao_xml, fornecedor_nome } = params
+  
+  try {
+    // Calcular intervalo de datas (±3 dias da data da NF)
+    const dataBase = new Date(data_nf)
+    const dataInicio = new Date(dataBase)
+    dataInicio.setDate(dataInicio.getDate() - 3)
+    const dataFim = new Date(dataBase)
+    dataFim.setDate(dataFim.getDate() + 3)
+    
+    // Tolerância de valor: R$ 0,01
+    const toleranciaValor = 0.01
+    
+    // Query pré-filtrada: despesas, valor similar, data próxima, não tem NF ainda
+    const { data, error } = await supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        id,
+        data_lancamento,
+        descricao,
+        valor,
+        tipo,
+        categoria_id,
+        conta_id,
+        conciliado,
+        com_nota_fiscal,
+        nota_fiscal_entrada_id,
+        ofx_fitid
+      `)
+      .in('tipo', ['despesa', 'saida']) // Só despesas (legado usa 'saida')
+      .gte('data_lancamento', dataInicio.toISOString().split('T')[0])
+      .lte('data_lancamento', dataFim.toISOString().split('T')[0])
+      .gte('valor', valor - toleranciaValor)
+      .lte('valor', valor + toleranciaValor)
+      .is('nota_fiscal_entrada_id', null) // Não tem NF vinculada ainda
+      .eq('com_nota_fiscal', false) // Não marcado como tendo NF
+      .limit(20)
+    
+    if (error) {
+      console.error('Erro ao buscar lançamentos para reconciliar:', error)
+      return { candidatos: [], melhorMatch: null }
+    }
+    
+    if (!data || data.length === 0) {
+      return { candidatos: [], melhorMatch: null }
+    }
+    
+    // Preparar tokens da descrição do XML + nome do fornecedor
+    const descricaoCompleta = fornecedor_nome 
+      ? `${descricao_xml} ${fornecedor_nome}` 
+      : descricao_xml
+    const tokensXML = extrairTokens(descricaoCompleta)
+    
+    // Calcular score de similaridade para cada candidato
+    const candidatos: CandidatoReconciliacao[] = data
+      .map(lanc => {
+        const tokensLanc = extrairTokens(lanc.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensXML, tokensLanc)
+        
+        // Calcular diferença de dias
+        const dataLanc = new Date(lanc.data_lancamento)
+        const diferencaDias = Math.abs(Math.round((dataLanc.getTime() - dataBase.getTime()) / (1000 * 60 * 60 * 24)))
+        
+        return {
+          id: lanc.id,
+          data_lancamento: lanc.data_lancamento,
+          descricao: lanc.descricao,
+          valor: lanc.valor,
+          tipo: lanc.tipo,
+          categoria_id: lanc.categoria_id,
+          conta_id: lanc.conta_id,
+          conciliado: lanc.conciliado,
+          com_nota_fiscal: lanc.com_nota_fiscal,
+          nota_fiscal_entrada_id: lanc.nota_fiscal_entrada_id,
+          ofx_fitid: lanc.ofx_fitid,
+          score,
+          diferencaDias
+        }
+      })
+      // Filtrar apenas com score >= 0.55 (limiar de confiança)
+      .filter(c => c.score >= 0.55)
+      // Ordenar por score DESC, depois por diferença de dias ASC
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        return a.diferencaDias - b.diferencaDias
+      })
+    
+    // Determinar melhor match
+    let melhorMatch: CandidatoReconciliacao | null = null
+    
+    if (candidatos.length === 1) {
+      // Apenas 1 candidato acima do limiar = match confiável
+      melhorMatch = candidatos[0]
+    } else if (candidatos.length > 1) {
+      // Múltiplos candidatos: verificar se o melhor é significativamente melhor
+      const melhor = candidatos[0]
+      const segundo = candidatos[1]
+      
+      // Se o melhor tem score >= 0.7 E é pelo menos 0.1 melhor que o segundo
+      if (melhor.score >= 0.7 && (melhor.score - segundo.score) >= 0.1) {
+        melhorMatch = melhor
+      }
+      // Caso contrário, não decidir automaticamente (retornar null para mostrar seleção)
+    }
+    
+    return { candidatos, melhorMatch }
+  } catch (err) {
+    console.error('Erro ao buscar lançamentos para reconciliar:', err)
+    return { candidatos: [], melhorMatch: null }
+  }
+}
+
+/**
+ * Reconcilia um lançamento existente (OFX) com dados da NF
+ * Atualiza o lançamento ao invés de criar um novo
+ * 
+ * @param params Dados para reconciliação
+ * @returns Sucesso e lançamento atualizado
+ */
+export async function reconciliarLancamentoComNF(params: {
+  lancamento_id: number
+  nota_fiscal_entrada_id: number
+  numero_nf: string
+  fornecedor_nome: string
+  categoria_id?: number | null
+  forma_pagamento?: string | null
+}): Promise<{ success: boolean; error?: string; lancamento?: LancamentoFinanceiro }> {
+  const { lancamento_id, nota_fiscal_entrada_id, numero_nf, fornecedor_nome, categoria_id, forma_pagamento } = params
+  
+  try {
+    // Buscar lançamento atual
+    const { data: lancamentoAtual, error: fetchError } = await supabase
+      .from('lancamentos_financeiros')
+      .select('*')
+      .eq('id', lancamento_id)
+      .single()
+    
+    if (fetchError || !lancamentoAtual) {
+      return { 
+        success: false, 
+        error: 'Lançamento não encontrado: ' + (fetchError?.message || 'ID inválido')
+      }
+    }
+    
+    // Preservar descrição original e adicionar info da NF
+    const descricaoOriginal = lancamentoAtual.descricao || ''
+    const novaDescricao = `NF ${numero_nf} - ${fornecedor_nome}${descricaoOriginal ? ` | OFX: ${descricaoOriginal}` : ''}`
+    
+    // Preparar dados de atualização
+    const dadosUpdate: Record<string, any> = {
+      com_nota_fiscal: true,
+      nota_fiscal_entrada_id,
+      descricao: novaDescricao,
+      updated_at: new Date().toISOString()
+    }
+    
+    // Atualizar categoria se fornecida (prioridade do XML)
+    if (categoria_id) {
+      // Se tinha categoria antes, guardar na observação
+      if (lancamentoAtual.categoria_id && lancamentoAtual.categoria_id !== categoria_id) {
+        const obsAnterior = lancamentoAtual.observacao || ''
+        dadosUpdate.observacao = `${obsAnterior}${obsAnterior ? ' | ' : ''}Categoria anterior ID: ${lancamentoAtual.categoria_id}`
+      }
+      dadosUpdate.categoria_id = categoria_id
+    }
+    
+    // Atualizar forma de pagamento se fornecida
+    if (forma_pagamento) {
+      dadosUpdate.forma_pagamento = forma_pagamento
+    }
+    
+    // Executar update
+    const { data: lancamentoAtualizado, error: updateError } = await supabase
+      .from('lancamentos_financeiros')
+      .update(dadosUpdate)
+      .eq('id', lancamento_id)
+      .select()
+      .single()
+    
+    if (updateError) {
+      return { 
+        success: false, 
+        error: 'Erro ao atualizar lançamento: ' + updateError.message
+      }
+    }
+    
+    console.log(`✓ Lançamento #${lancamento_id} reconciliado com NF ${numero_nf}`)
+    
+    return { 
+      success: true, 
+      lancamento: lancamentoAtualizado as LancamentoFinanceiro
+    }
+  } catch (err) {
+    console.error('Erro ao reconciliar lançamento com NF:', err)
+    return { 
+      success: false, 
+      error: 'Erro interno ao reconciliar'
+    }
+  }
+}
+
+// ==================== FUNÇÕES - DETECÇÃO DE DUPLICADOS EXISTENTES ====================
+
+/**
+ * Interface para par de lançamentos duplicados
+ */
+export interface ParDuplicado {
+  lancamentoComNF: LancamentoFinanceiro    // O que tem NF
+  lancamentoSemNF: LancamentoFinanceiro    // O que não tem NF (provavelmente OFX)
+  score: number                             // Similaridade
+  diferencaDias: number                     // Diferença de dias entre eles
+}
+
+/**
+ * Detecta lançamentos duplicados existentes no banco
+ * Busca pares onde um tem NF e outro não, com valor igual e descrição similar
+ * 
+ * @param limite Número máximo de pares a retornar
+ * @returns Lista de pares duplicados ordenados por score
+ */
+export async function detectarDuplicadosExistentes(limite: number = 50): Promise<ParDuplicado[]> {
+  try {
+    // Buscar lançamentos COM NF (provavelmente do XML)
+    const { data: lancamentosComNF, error: error1 } = await supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        *,
+        categoria:categorias_financeiras(id, nome, tipo),
+        conta:contas_bancarias(id, nome)
+      `)
+      .eq('com_nota_fiscal', true)
+      .in('tipo', ['despesa', 'saida'])
+      .order('data_lancamento', { ascending: false })
+      .limit(200)
+    
+    if (error1 || !lancamentosComNF) {
+      console.error('Erro ao buscar lançamentos com NF:', error1)
+      return []
+    }
+    
+    // Buscar lançamentos SEM NF (provavelmente do OFX)
+    const { data: lancamentosSemNF, error: error2 } = await supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        *,
+        categoria:categorias_financeiras(id, nome, tipo),
+        conta:contas_bancarias(id, nome)
+      `)
+      .eq('com_nota_fiscal', false)
+      .in('tipo', ['despesa', 'saida'])
+      .order('data_lancamento', { ascending: false })
+      .limit(500)
+    
+    if (error2 || !lancamentosSemNF) {
+      console.error('Erro ao buscar lançamentos sem NF:', error2)
+      return []
+    }
+    
+    const duplicados: ParDuplicado[] = []
+    const toleranciaValor = 0.01
+    
+    // Para cada lançamento com NF, buscar possível duplicado sem NF
+    for (const lancNF of lancamentosComNF) {
+      // Calcular intervalo de datas (±5 dias)
+      const dataNF = new Date(lancNF.data_lancamento)
+      
+      // Buscar candidatos sem NF
+      for (const lancSemNF of lancamentosSemNF) {
+        // Verificar valor (com tolerância)
+        if (Math.abs(lancNF.valor - lancSemNF.valor) > toleranciaValor) continue
+        
+        // Verificar data (±5 dias)
+        const dataSemNF = new Date(lancSemNF.data_lancamento)
+        const diferencaDias = Math.abs(Math.round((dataNF.getTime() - dataSemNF.getTime()) / (1000 * 60 * 60 * 24)))
+        if (diferencaDias > 5) continue
+        
+        // Calcular similaridade de descrição
+        const tokensNF = extrairTokens(lancNF.descricao || '')
+        const tokensSemNF = extrairTokens(lancSemNF.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensNF, tokensSemNF)
+        
+        // Se similaridade >= 0.3 (mais baixo para detectar mais candidatos)
+        if (score >= 0.3) {
+          // Verificar se já não estão no mesmo grupo
+          if (lancNF.grupo_id && lancNF.grupo_id === lancSemNF.grupo_id) continue
+          
+          duplicados.push({
+            lancamentoComNF: lancNF as LancamentoFinanceiro,
+            lancamentoSemNF: lancSemNF as LancamentoFinanceiro,
+            score,
+            diferencaDias
+          })
+        }
+      }
+    }
+    
+    // Ordenar por score (melhor primeiro) e limitar
+    return duplicados
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limite)
+  } catch (err) {
+    console.error('Erro ao detectar duplicados:', err)
+    return []
+  }
+}
+
+/**
+ * Mescla dois lançamentos duplicados
+ * O lançamento COM NF é mantido como principal, o SEM NF é marcado como reconciliado
+ * 
+ * @param lancamentoNFId ID do lançamento com NF (será o principal)
+ * @param lancamentoOFXId ID do lançamento sem NF (será subordinado ou removido)
+ * @param acao 'agrupar' = mantém ambos no grupo | 'mesclar' = remove o OFX após mesclar dados
+ */
+export async function mesclarDuplicados(params: {
+  lancamentoNFId: number
+  lancamentoOFXId: number
+  acao: 'agrupar' | 'mesclar'
+}): Promise<{ success: boolean; error?: string }> {
+  const { lancamentoNFId, lancamentoOFXId, acao } = params
+  
+  try {
+    // Buscar ambos os lançamentos
+    const { data: lancamentos, error: fetchError } = await supabase
+      .from('lancamentos_financeiros')
+      .select('*')
+      .in('id', [lancamentoNFId, lancamentoOFXId])
+    
+    if (fetchError || !lancamentos || lancamentos.length !== 2) {
+      return { success: false, error: 'Lançamentos não encontrados' }
+    }
+    
+    const lancNF = lancamentos.find(l => l.id === lancamentoNFId)!
+    const lancOFX = lancamentos.find(l => l.id === lancamentoOFXId)!
+    
+    if (acao === 'mesclar') {
+      // Mesclar: atualizar o lançamento com NF com dados do OFX e deletar o OFX
+      const descricaoMesclada = lancNF.descricao + (lancOFX.descricao ? ` | OFX: ${lancOFX.descricao}` : '')
+      
+      // Preservar dados do OFX que podem ser úteis
+      const observacaoAtualizada = [
+        lancNF.observacao || '',
+        lancOFX.observacao ? `Obs OFX: ${lancOFX.observacao}` : '',
+        lancOFX.ofx_fitid ? `FITID: ${lancOFX.ofx_fitid}` : '',
+        `Reconciliado em: ${new Date().toLocaleDateString('pt-BR')}`
+      ].filter(Boolean).join(' | ')
+      
+      // Atualizar o lançamento com NF
+      const { error: updateError } = await supabase
+        .from('lancamentos_financeiros')
+        .update({
+          descricao: descricaoMesclada,
+          observacao: observacaoAtualizada,
+          ofx_fitid: lancOFX.ofx_fitid || lancNF.ofx_fitid, // Preservar FITID
+          conta_id: lancOFX.conta_id || lancNF.conta_id,    // Preservar conta se o NF não tinha
+          conciliado: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', lancamentoNFId)
+      
+      if (updateError) {
+        return { success: false, error: 'Erro ao atualizar lançamento: ' + updateError.message }
+      }
+      
+      // Deletar o lançamento OFX
+      const { error: deleteError } = await supabase
+        .from('lancamentos_financeiros')
+        .delete()
+        .eq('id', lancamentoOFXId)
+      
+      if (deleteError) {
+        return { success: false, error: 'Erro ao deletar lançamento OFX: ' + deleteError.message }
+      }
+      
+      console.log(`✓ Lançamentos mesclados: #${lancamentoNFId} (NF) + #${lancamentoOFXId} (OFX) -> #${lancamentoNFId}`)
+    } else {
+      // Agrupar: manter ambos mas vincular
+      const grupo_id = gerarUUID()
+      
+      // O lançamento com NF é o principal
+      await supabase
+        .from('lancamentos_financeiros')
+        .update({
+          grupo_id,
+          grupo_principal_id: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', lancamentoNFId)
+      
+      // O lançamento OFX é subordinado
+      await supabase
+        .from('lancamentos_financeiros')
+        .update({
+          grupo_id,
+          grupo_principal_id: lancamentoNFId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', lancamentoOFXId)
+      
+      console.log(`✓ Lançamentos agrupados: #${lancamentoNFId} (principal) + #${lancamentoOFXId} (subordinado)`)
+    }
+    
+    return { success: true }
+  } catch (err) {
+    console.error('Erro ao mesclar duplicados:', err)
+    return { success: false, error: 'Erro interno ao mesclar' }
+  }
+}
+
+/**
+ * Reconciliação AUTOMÁTICA de duplicados
+ * Busca e mescla automaticamente lançamentos duplicados óbvios
+ * Critérios rigorosos: mesmo valor exato, datas ±3 dias, um com NF outro sem
+ * 
+ * @returns Quantidade de pares mesclados automaticamente
+ */
+export async function reconciliarDuplicadosAutomatico(): Promise<{
+  mesclados: number
+  detalhes: Array<{ nfId: number; ofxId: number; descricaoNF: string; descricaoOFX: string }>
+}> {
+  const resultado = { mesclados: 0, detalhes: [] as any[] }
+  
+  try {
+    console.log('═══════════════════════════════════════════════════════════')
+    console.log('🔍 INICIANDO RECONCILIAÇÃO AUTOMÁTICA DE DUPLICADOS')
+    console.log('═══════════════════════════════════════════════════════════')
+    
+    // Buscar lançamentos COM NF (despesas)
+    const { data: lancamentosComNF, error: error1 } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id, descricao, valor, data_lancamento, categoria_id, conta_id, com_nota_fiscal, tipo')
+      .eq('com_nota_fiscal', true)
+      .in('tipo', ['despesa', 'saida'])
+      .order('data_lancamento', { ascending: false })
+      .limit(100)
+    
+    console.log(`\n📋 Lançamentos COM NF encontrados: ${lancamentosComNF?.length || 0}`)
+    if (error1) {
+      console.error('❌ Erro ao buscar lançamentos COM NF:', error1)
+      return resultado
+    }
+    
+    if (!lancamentosComNF || lancamentosComNF.length === 0) {
+      console.log('⚠️ Nenhum lançamento COM NF encontrado')
+      return resultado
+    }
+    
+    // Listar todos os lançamentos COM NF
+    console.log('\n--- LANÇAMENTOS COM NF (despesas) ---')
+    lancamentosComNF.forEach(l => {
+      console.log(`  #${l.id} | ${l.data_lancamento} | R$ ${l.valor} | "${l.descricao}" | tipo: ${l.tipo}`)
+    })
+    
+    // Buscar lançamentos SEM NF (provavelmente OFX)
+    const { data: lancamentosSemNF, error: error2 } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id, descricao, valor, data_lancamento, categoria_id, conta_id, ofx_fitid, com_nota_fiscal, tipo')
+      .eq('com_nota_fiscal', false)
+      .in('tipo', ['despesa', 'saida'])
+      .order('data_lancamento', { ascending: false })
+      .limit(300)
+    
+    console.log(`\n📋 Lançamentos SEM NF encontrados: ${lancamentosSemNF?.length || 0}`)
+    if (error2) {
+      console.error('❌ Erro ao buscar lançamentos SEM NF:', error2)
+      return resultado
+    }
+    
+    if (!lancamentosSemNF || lancamentosSemNF.length === 0) {
+      console.log('⚠️ Nenhum lançamento SEM NF encontrado')
+      return resultado
+    }
+    
+    // Listar todos os lançamentos SEM NF
+    console.log('\n--- LANÇAMENTOS SEM NF (provavelmente OFX) ---')
+    lancamentosSemNF.forEach(l => {
+      console.log(`  #${l.id} | ${l.data_lancamento} | R$ ${l.valor} | "${l.descricao}" | tipo: ${l.tipo}`)
+    })
+    
+    console.log('\n═══════════════════════════════════════════════════════════')
+    console.log('🔎 ANÁLISE DE POSSÍVEIS DUPLICADOS')
+    console.log('═══════════════════════════════════════════════════════════')
+    
+    // Para cada lançamento COM NF, buscar match exato
+    for (const lancNF of lancamentosComNF) {
+      const dataNF = new Date(lancNF.data_lancamento)
+      const valorNFCentavos = Math.round(lancNF.valor * 100)
+      
+      // DEBUG: Análise específica para valor 69.02
+      const isTargetNF = valorNFCentavos === 6902
+      
+      if (isTargetNF) {
+        console.log(`\n🎯 ANALISANDO NF TARGET: "${lancNF.descricao}" (R$ ${lancNF.valor})`)
+        
+        // Primeiro, mostrar TODOS os OFX com mesmo valor
+        const candidatosExatos = lancamentosSemNF.filter(l => Math.round(l.valor * 100) === valorNFCentavos)
+        console.log(`   📋 OFX com MESMO VALOR (R$ ${lancNF.valor}): ${candidatosExatos.length} encontrados`)
+        candidatosExatos.forEach((c, i) => {
+          console.log(`      ${i+1}. #${c.id} | ${c.data_lancamento} | "${c.descricao}"`)
+        })
+      }
+      
+      for (const lancOFX of lancamentosSemNF) {
+        // Mesmo valor exato (em centavos para evitar float issues)
+        const valorNF = valorNFCentavos
+        const valorOFX = Math.round(lancOFX.valor * 100)
+        
+        // DEBUG para o caso específico (mesmo valor)
+        const isTargetPair = isTargetNF && valorNF === valorOFX
+        
+        if (isTargetPair) {
+          console.log(`\n   📊 COMPARANDO COM CANDIDATO:`)
+          console.log(`      NF:  "${lancNF.descricao}" | R$ ${lancNF.valor} | Data: ${lancNF.data_lancamento}`)
+          console.log(`      OFX: "${lancOFX.descricao}" | R$ ${lancOFX.valor} | Data: ${lancOFX.data_lancamento}`)
+        }
+        
+        if (valorNF !== valorOFX) {
+          continue // Silenciosamente pula valores diferentes
+        }
+        
+        if (isTargetPair) {
+          console.log(`      ✅ VALOR IGUAL: R$ ${lancNF.valor}`)
+        }
+        
+        // Datas próximas (±3 dias)
+        const dataOFX = new Date(lancOFX.data_lancamento)
+        const diffDias = Math.abs(Math.round((dataNF.getTime() - dataOFX.getTime()) / (1000 * 60 * 60 * 24)))
+        
+        if (isTargetPair) {
+          console.log(`      📅 Diferença de dias: ${diffDias}`)
+        }
+        
+        if (diffDias > 3) {
+          if (isTargetPair) {
+            console.log(`      ❌ DATAS MUITO DISTANTES: ${diffDias} dias (limite: 3)`)
+          }
+          continue
+        }
+        
+        if (isTargetPair) {
+          console.log(`      ✅ DATAS PRÓXIMAS: ${diffDias} dias`)
+        }
+        
+        // Calcular similaridade de descrição
+        const descNFNormalizada = normalizarDescricao(lancNF.descricao || '')
+        const descOFXNormalizada = normalizarDescricao(lancOFX.descricao || '')
+        const tokensNF = extrairTokens(lancNF.descricao || '')
+        const tokensOFX = extrairTokens(lancOFX.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensNF, tokensOFX)
+        
+        if (isTargetPair) {
+          console.log(`\n      🔤 ANÁLISE DE TEXTO:`)
+          console.log(`         NF Original:    "${lancNF.descricao}"`)
+          console.log(`         NF Normalizada: "${descNFNormalizada}"`)
+          console.log(`         NF Tokens:      [${Array.from(tokensNF).join(', ')}]`)
+          console.log(`         OFX Original:   "${lancOFX.descricao}"`)
+          console.log(`         OFX Normalizada: "${descOFXNormalizada}"`)
+          console.log(`         OFX Tokens:     [${Array.from(tokensOFX).join(', ')}]`)
+          console.log(`         SCORE JACCARD:  ${(score * 100).toFixed(1)}% (mínimo: 25%)`)
+        }
+        
+        // Score >= 0.25 para match automático (mais permissivo porque valor e data já batem)
+        if (score >= 0.25) {
+          console.log(`\n✅ MATCH ENCONTRADO!`)
+          console.log(`   NF:  "${lancNF.descricao}"`)
+          console.log(`   OFX: "${lancOFX.descricao}"`)
+          console.log(`   Score: ${(score*100).toFixed(0)}%`)
+          
+          // Mesclar: manter NF, absorver dados do OFX, deletar OFX
+          const descricaoMesclada = lancNF.descricao + ` | OFX: ${lancOFX.descricao}`
+          
+          await supabase
+            .from('lancamentos_financeiros')
+            .update({
+              descricao: descricaoMesclada,
+              conta_id: lancOFX.conta_id || lancNF.conta_id,
+              ofx_fitid: lancOFX.ofx_fitid,
+              conciliado: true,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', lancNF.id)
+          
+          await supabase
+            .from('lancamentos_financeiros')
+            .delete()
+            .eq('id', lancOFX.id)
+          
+          resultado.mesclados++
+          resultado.detalhes.push({
+            nfId: lancNF.id,
+            ofxId: lancOFX.id,
+            descricaoNF: lancNF.descricao,
+            descricaoOFX: lancOFX.descricao
+          })
+          
+          // Remover o OFX da lista para não processar novamente
+          const idx = lancamentosSemNF.findIndex(l => l.id === lancOFX.id)
+          if (idx > -1) lancamentosSemNF.splice(idx, 1)
+          
+          break // Passar para o próximo lançamento com NF
+        } else if (isTargetPair) {
+          console.log(`\n      ❌ SCORE INSUFICIENTE: ${(score * 100).toFixed(1)}% < 25%`)
+          console.log(`         Motivo: Os tokens não têm interseção suficiente`)
+        }
+      }
+    }
+    
+    console.log('\n═══════════════════════════════════════════════════════════')
+    if (resultado.mesclados > 0) {
+      console.log(`✅ RECONCILIAÇÃO CONCLUÍDA: ${resultado.mesclados} par(es) mesclado(s)`)
+    } else {
+      console.log('ℹ️ NENHUM DUPLICADO ÓBVIO ENCONTRADO')
+    }
+    console.log('═══════════════════════════════════════════════════════════\n')
+    
+    return resultado
+  } catch (err) {
+    console.error('❌ Erro na reconciliação automática:', err)
+    return resultado
+  }
+}
+
+// ==================== FUNÇÕES - AGRUPAMENTO DE LANÇAMENTOS ====================
+
+/**
+ * Gera UUID v4 simples para identificar grupos
+ */
+function gerarUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0
+    const v = c === 'x' ? r : (r & 0x3 | 0x8)
+    return v.toString(16)
+  })
+}
+
+/**
+ * Agrupa dois lançamentos como duplicados/semelhantes
+ * O principal é definido por: (1) ter NF, (2) ser mais antigo, (3) ter ID menor
+ * @param principal_id ID do lançamento que será o principal do grupo
+ * @param duplicado_id ID do lançamento que será agrupado como subordinado
+ */
+export async function agruparLancamentos(params: {
+  principal_id: number
+  duplicado_id: number
+}): Promise<{ success: boolean; error?: string; grupo_id?: string }> {
+  const { principal_id, duplicado_id } = params
+  
+  try {
+    // Buscar ambos os lançamentos
+    const { data: lancamentos, error: fetchError } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id, com_nota_fiscal, created_at, grupo_id, grupo_principal_id')
+      .in('id', [principal_id, duplicado_id])
+    
+    if (fetchError || !lancamentos || lancamentos.length !== 2) {
+      return { 
+        success: false, 
+        error: 'Erro ao buscar lançamentos: ' + (fetchError?.message || 'Lançamentos não encontrados')
+      }
+    }
+    
+    const lancPrincipal = lancamentos.find(l => l.id === principal_id)!
+    const lancDuplicado = lancamentos.find(l => l.id === duplicado_id)!
+    
+    // Verificar se já estão no mesmo grupo
+    if (lancPrincipal.grupo_id && lancPrincipal.grupo_id === lancDuplicado.grupo_id) {
+      return { 
+        success: false, 
+        error: 'Lançamentos já pertencem ao mesmo grupo'
+      }
+    }
+    
+    // Determinar o grupo_id (usar existente ou criar novo)
+    let grupo_id = lancPrincipal.grupo_id || lancDuplicado.grupo_id || gerarUUID()
+    
+    // Calcular se algum tem NF (para propagar ao grupo)
+    const grupoPossuiNF = lancPrincipal.com_nota_fiscal || lancDuplicado.com_nota_fiscal
+    
+    // Atualizar o lançamento principal
+    const { error: updatePrincipalError } = await supabase
+      .from('lancamentos_financeiros')
+      .update({
+        grupo_id,
+        grupo_principal_id: null, // Principal não tem referência a outro
+        com_nota_fiscal: grupoPossuiNF // Propagar NF
+      })
+      .eq('id', principal_id)
+    
+    if (updatePrincipalError) {
+      return { 
+        success: false, 
+        error: 'Erro ao atualizar lançamento principal: ' + updatePrincipalError.message
+      }
+    }
+    
+    // Atualizar o lançamento duplicado
+    const { error: updateDuplicadoError } = await supabase
+      .from('lancamentos_financeiros')
+      .update({
+        grupo_id,
+        grupo_principal_id: principal_id,
+        com_nota_fiscal: grupoPossuiNF // Propagar NF
+      })
+      .eq('id', duplicado_id)
+    
+    if (updateDuplicadoError) {
+      return { 
+        success: false, 
+        error: 'Erro ao atualizar lançamento duplicado: ' + updateDuplicadoError.message
+      }
+    }
+    
+    // Se o duplicado já tinha outros subordinados, redirecionar para o novo principal
+    if (lancDuplicado.grupo_id) {
+      await supabase
+        .from('lancamentos_financeiros')
+        .update({ grupo_principal_id: principal_id, grupo_id })
+        .eq('grupo_principal_id', duplicado_id)
+    }
+    
+    return { success: true, grupo_id }
+  } catch (err) {
+    console.error('Erro ao agrupar lançamentos:', err)
+    return { 
+      success: false, 
+      error: 'Erro interno ao agrupar lançamentos'
+    }
+  }
+}
+
+/**
+ * Remove um lançamento de seu grupo atual
+ * @param lancamento_id ID do lançamento a ser removido do grupo
+ */
+export async function desagruparLancamento(lancamento_id: number): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Buscar lançamento
+    const { data: lancamento, error: fetchError } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id, grupo_id, grupo_principal_id')
+      .eq('id', lancamento_id)
+      .single()
+    
+    if (fetchError || !lancamento) {
+      return { success: false, error: 'Lançamento não encontrado' }
+    }
+    
+    if (!lancamento.grupo_id) {
+      return { success: false, error: 'Lançamento não pertence a nenhum grupo' }
+    }
+    
+    // Se é o principal do grupo, precisamos eleger um novo principal
+    if (!lancamento.grupo_principal_id) {
+      // Buscar todos os subordinados deste grupo
+      const { data: subordinados } = await supabase
+        .from('lancamentos_financeiros')
+        .select('id, com_nota_fiscal, created_at')
+        .eq('grupo_principal_id', lancamento_id)
+        .order('created_at', { ascending: true })
+      
+      if (subordinados && subordinados.length > 0) {
+        // Eleger o próximo (mais antigo) como novo principal
+        const novoPrincipal = subordinados[0]
+        
+        // Atualizar o novo principal
+        await supabase
+          .from('lancamentos_financeiros')
+          .update({ grupo_principal_id: null })
+          .eq('id', novoPrincipal.id)
+        
+        // Redirecionar os outros subordinados para o novo principal
+        if (subordinados.length > 1) {
+          const outrosIds = subordinados.slice(1).map(s => s.id)
+          await supabase
+            .from('lancamentos_financeiros')
+            .update({ grupo_principal_id: novoPrincipal.id })
+            .in('id', outrosIds)
+        }
+      }
+    }
+    
+    // Remover este lançamento do grupo
+    const { error: updateError } = await supabase
+      .from('lancamentos_financeiros')
+      .update({ grupo_id: null, grupo_principal_id: null })
+      .eq('id', lancamento_id)
+    
+    if (updateError) {
+      return { success: false, error: 'Erro ao remover do grupo: ' + updateError.message }
+    }
+    
+    return { success: true }
+  } catch (err) {
+    console.error('Erro ao desagrupar lançamento:', err)
+    return { success: false, error: 'Erro interno ao desagrupar' }
+  }
+}
+
+/**
+ * Busca lançamentos com informações de grupo
+ * Retorna lista com lançamentos principais e seus subordinados aninhados
+ */
+export async function fetchLancamentosAgrupados(filtros?: {
+  tipo?: string
+  dataInicio?: string
+  dataFim?: string
+  contaId?: number
+  categoriaId?: number
+  incluirSubordinados?: boolean
+}): Promise<LancamentoFinanceiro[]> {
+  try {
+    let query = supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        *,
+        categoria:categorias_financeiras(id, nome, tipo),
+        conta:contas_bancarias(id, nome),
+        cliente:clientes(id, nome_fantasia, razao_social),
+        fornecedor:fornecedores(id, nome_fantasia, razao_social)
+      `)
+      .order('data_lancamento', { ascending: false })
+    
+    // Filtros
+    if (filtros?.tipo) {
+      query = query.eq('tipo', filtros.tipo)
+    }
+    if (filtros?.dataInicio) {
+      query = query.gte('data_lancamento', filtros.dataInicio)
+    }
+    if (filtros?.dataFim) {
+      query = query.lte('data_lancamento', filtros.dataFim)
+    }
+    if (filtros?.contaId) {
+      query = query.eq('conta_id', filtros.contaId)
+    }
+    if (filtros?.categoriaId) {
+      query = query.eq('categoria_id', filtros.categoriaId)
+    }
+    
+    // Por padrão, não mostrar subordinados na lista principal
+    if (!filtros?.incluirSubordinados) {
+      query = query.is('grupo_principal_id', null)
+    }
+    
+    const { data, error } = await query.limit(500)
+    
+    if (error) {
+      console.error('Erro ao buscar lançamentos agrupados:', error)
+      return []
+    }
+    
+    if (!data) return []
+    
+    // Para cada lançamento que é principal de grupo, buscar subordinados
+    const resultado: LancamentoFinanceiro[] = []
+    
+    for (const lanc of data) {
+      const lancFormatado: LancamentoFinanceiro = {
+        ...lanc,
+        is_grupo_principal: lanc.grupo_id && !lanc.grupo_principal_id,
+        grupo_total_itens: 1,
+        grupo_possui_nf: lanc.com_nota_fiscal,
+        itens_grupo: []
+      }
+      
+      // Se for principal de grupo, buscar subordinados
+      if (lancFormatado.is_grupo_principal) {
+        const { data: subordinados } = await supabase
+          .from('lancamentos_financeiros')
+          .select(`
+            *,
+            categoria:categorias_financeiras(id, nome, tipo),
+            conta:contas_bancarias(id, nome)
+          `)
+          .eq('grupo_principal_id', lanc.id)
+        
+        if (subordinados && subordinados.length > 0) {
+          lancFormatado.itens_grupo = subordinados as LancamentoFinanceiro[]
+          lancFormatado.grupo_total_itens = 1 + subordinados.length
+          lancFormatado.grupo_possui_nf = lanc.com_nota_fiscal || subordinados.some(s => s.com_nota_fiscal)
+        }
+      }
+      
+      resultado.push(lancFormatado)
+    }
+    
+    return resultado
+  } catch (err) {
+    console.error('Erro ao buscar lançamentos agrupados:', err)
+    return []
+  }
+}
+
+/**
+ * Busca os itens de um grupo específico
+ */
+export async function fetchItensGrupo(grupo_id: string): Promise<LancamentoFinanceiro[]> {
+  try {
+    const { data, error } = await supabase
+      .from('lancamentos_financeiros')
+      .select(`
+        *,
+        categoria:categorias_financeiras(id, nome, tipo),
+        conta:contas_bancarias(id, nome)
+      `)
+      .eq('grupo_id', grupo_id)
+      .order('grupo_principal_id', { ascending: true, nullsFirst: true })
+    
+    if (error) {
+      console.error('Erro ao buscar itens do grupo:', error)
+      return []
+    }
+    
+    return (data || []) as LancamentoFinanceiro[]
+  } catch (err) {
+    console.error('Erro ao buscar itens do grupo:', err)
+    return []
+  }
 }
 
 // ==================== FUNÇÕES - CONTAS A PAGAR ====================
@@ -1326,7 +3109,6 @@ export async function getRelatorioInventario(categoriaId?: number) {
       *,
       categoria:categorias(nome)
     `)
-    .eq('ativo', true)
     .order('nome')
 
   if (categoriaId) {
@@ -1945,6 +3727,19 @@ export async function updateStatusOS(id: number, status: OrdemServico['status'])
 
     const venda = await createVenda(vendaData, itensVenda)
     venda_id = venda.id
+
+    // Criar lançamento financeiro (receita) automaticamente
+    // Por padrão, vendas geradas de orçamento são consideradas à vista
+    await createLancamentoFinanceiro({
+      tipo: 'receita',
+      valor: os.valor_total,
+      data_lancamento: new Date().toISOString().split('T')[0],
+      descricao: `Venda #${novoNumero} (OS #${os.numero})`,
+      cliente_id: os.cliente_id || undefined,
+      venda_id: venda.id,
+      forma_pagamento: 'dinheiro',
+      conciliado: false
+    })
 
     // Atualizar a OS com o venda_id e o status
     const { error: updateError } = await supabase

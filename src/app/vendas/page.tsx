@@ -11,6 +11,7 @@ import {
   LoadingSpinner, EmptyState, Badge 
 } from '@/components/ui/Common'
 import { Modal } from '@/components/ui/Modal'
+import { ClienteDetailModal, ProdutoDetailModal } from '@/components/ui/DetailModals'
 import { 
   fetchClientes, fetchProdutos, createVenda, fetchVendas,
   updateVenda, deleteVenda, createLancamentoFinanceiro,
@@ -77,6 +78,12 @@ export default function VendasPage() {
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null)
   const [saving, setSaving] = useState(false)
   const [generatingNF, setGeneratingNF] = useState(false)
+
+  // Estados para modais de detalhes
+  const [clienteModalOpen, setClienteModalOpen] = useState(false)
+  const [produtoModalOpen, setProdutoModalOpen] = useState(false)
+  const [selectedClienteId, setSelectedClienteId] = useState<number | null>(null)
+  const [selectedProdutoId, setSelectedProdutoId] = useState<number | null>(null)
 
   // Form state
   const [form, setForm] = useState<VendaForm>({
@@ -1016,8 +1023,8 @@ export default function VendasPage() {
                             <span className="text-green-400 font-medium">
                               {formatCurrency(produto.valor_venda || 0)}
                             </span>
-                            <span className="text-dark-400 text-sm block">
-                              Estoque: {produto.quantidade_estoque}
+                            <span className={`text-sm block font-medium px-2 py-0.5 rounded mt-1 ${(produto.quantidade_estoque ?? 0) <= 0 ? 'bg-red-500/20 text-red-400' : (produto.quantidade_estoque ?? 0) <= 5 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
+                              Estoque: {produto.quantidade_estoque ?? 0}
                             </span>
                           </div>
                         </button>
@@ -1262,9 +1269,20 @@ export default function VendasPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <p className="text-dark-400 text-sm">Cliente</p>
-                <p className="text-white font-medium">
-                  {selectedVenda.cliente?.nome || selectedVenda.cliente?.razao_social || 'Não informado'}
-                </p>
+                {selectedVenda.cliente_id ? (
+                  <button 
+                    onClick={() => {
+                      setSelectedClienteId(selectedVenda.cliente_id)
+                      setClienteModalOpen(true)
+                    }}
+                    className="text-primary-400 font-medium hover:text-primary-300 transition-colors text-left flex items-center gap-2"
+                  >
+                    <User className="w-4 h-4" />
+                    {selectedVenda.cliente?.nome || selectedVenda.cliente?.razao_social || 'Ver Cliente'}
+                  </button>
+                ) : (
+                  <p className="text-white font-medium">Não informado</p>
+                )}
               </div>
               <div>
                 <p className="text-dark-400 text-sm">Data</p>
@@ -1416,6 +1434,18 @@ export default function VendasPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Modais de Detalhes */}
+      <ClienteDetailModal 
+        isOpen={clienteModalOpen} 
+        onClose={() => setClienteModalOpen(false)} 
+        clienteId={selectedClienteId} 
+      />
+      <ProdutoDetailModal 
+        isOpen={produtoModalOpen} 
+        onClose={() => setProdutoModalOpen(false)} 
+        produtoId={selectedProdutoId} 
+      />
     </div>
   )
 }

@@ -1,21 +1,25 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { 
   Plus, Edit2, Trash2, Search, DollarSign, TrendingUp, TrendingDown,
   Calendar, FileText, Upload, Download, CheckCircle, Clock, AlertTriangle,
-  CreditCard, Wallet, Building2, RefreshCw, Filter
+  CreditCard, Wallet, Building2, RefreshCw, Filter, AlertCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
+import { 
+  ClienteDetailModal, FornecedorDetailModal, VendaDetailModal 
+} from '@/components/ui/DetailModals'
 import { 
   ContaPagar, ContaReceber, ContaBancaria, CategoriaFinanceira, LancamentoFinanceiro,
   fetchContasPagar, createContaPagar, updateContaPagar, deleteContaPagar,
   fetchContasReceber, createContaReceber, updateContaReceber, deleteContaReceber,
   fetchContasBancarias, createContaBancaria, fetchCategoriasFinanceiras, createCategoriaFinanceira,
   fetchLancamentosFinanceiros, createLancamentoFinanceiro,
-  fetchFornecedores, fetchClientes, checkOFXDuplicado
+  fetchFornecedores, fetchClientes, checkOFXDuplicado,
+  checkOFXDuplicadoAvancado, ResultadoImportacaoOFX
 } from '@/lib/database'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -47,6 +51,14 @@ export default function FinanceiroPage() {
   const [isContaBancariaModalOpen, setIsContaBancariaModalOpen] = useState(false)
   const [isOFXModalOpen, setIsOFXModalOpen] = useState(false)
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false)
+  
+  // Modais de Detalhes
+  const [clienteModalOpen, setClienteModalOpen] = useState(false)
+  const [fornecedorModalOpen, setFornecedorModalOpen] = useState(false)
+  const [vendaModalOpen, setVendaModalOpen] = useState(false)
+  const [selectedClienteId, setSelectedClienteId] = useState<number | null>(null)
+  const [selectedFornecedorId, setSelectedFornecedorId] = useState<number | null>(null)
+  const [selectedVendaId, setSelectedVendaId] = useState<number | null>(null)
   
   // Edição
   const [editingPagar, setEditingPagar] = useState<ContaPagar | null>(null)
@@ -101,6 +113,15 @@ export default function FinanceiroPage() {
   // OFX Import
   const [ofxData, setOfxData] = useState<any[]>([])
   const [ofxCategorizacao, setOfxCategorizacao] = useState<{[key: string]: number}>({})
+  const [importResult, setImportResult] = useState<ResultadoImportacaoOFX | null>(null)
+  
+  // Validação de categorias OFX
+  const [attemptedImport, setAttemptedImport] = useState(false)
+  const [missingCategoryIds, setMissingCategoryIds] = useState<string[]>([])
+  const [missingContaBancaria, setMissingContaBancaria] = useState(false)
+  const ofxRowRefs = useRef<{[key: string]: HTMLTableRowElement | null}>({})
+  const ofxSelectRefs = useRef<{[key: string]: HTMLSelectElement | null}>({})
+  const contaBancariaSelectRef = useRef<HTMLSelectElement | null>(null)
 
   useEffect(() => {
     loadData()
@@ -155,7 +176,7 @@ export default function FinanceiroPage() {
   // Filtrar lançamentos
   const filteredLancamentos = lancamentos.filter(l => {
     const matchSearch = l.descricao?.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchConta = !filterContaBancaria || l.conta_bancaria_id === filterContaBancaria || l.conta_id === filterContaBancaria
+    const matchConta = !filterContaBancaria || l.conta_id === filterContaBancaria
     return matchSearch && matchConta
   })
 
@@ -248,13 +269,12 @@ export default function FinanceiroPage() {
       // Criar lançamento
       if (conta.conta_bancaria_id) {
         await createLancamentoFinanceiro({
-          conta_bancaria_id: conta.conta_bancaria_id,
+          conta_id: conta.conta_bancaria_id,
           tipo: 'despesa',
           valor: conta.valor,
-          data: new Date().toISOString().split('T')[0],
+          data_lancamento: new Date().toISOString().split('T')[0],
           descricao: conta.descricao,
           categoria_id: conta.categoria_id,
-          conta_pagar_id: conta.id,
           conciliado: false
         })
       }
@@ -364,13 +384,12 @@ export default function FinanceiroPage() {
       // Criar lançamento
       if (conta.conta_bancaria_id) {
         await createLancamentoFinanceiro({
-          conta_bancaria_id: conta.conta_bancaria_id,
+          conta_id: conta.conta_bancaria_id,
           tipo: 'receita',
           valor: conta.valor,
-          data: new Date().toISOString().split('T')[0],
+          data_lancamento: new Date().toISOString().split('T')[0],
           descricao: conta.descricao,
           categoria_id: conta.categoria_id,
-          conta_receber_id: conta.id,
           conciliado: false
         })
       }
@@ -438,30 +457,46 @@ export default function FinanceiroPage() {
     const file = e.target.files?.[0]
     if (!file) return
     
+    // Reset estados anteriores
+    setImportResult(null)
+    
     try {
       const text = await file.text()
       // Parse OFX simplificado
       const transactions: any[] = []
       const stmttrn = text.match(/<STMTTRN>([\s\S]*?)<\/STMTTRN>/g) || []
       
+      // Set para deduplicar dentro do próprio arquivo (por FITID)
+      const fitidsNoArquivo = new Set<string>()
+      
       for (const trn of stmttrn) {
-        const trntype = trn.match(/<TRNTYPE>(\w+)/)?.[1]
+        const trntype = trn.match(/<TRNTYPE>([^<\s]+)/)?.[1]
         const dtposted = trn.match(/<DTPOSTED>(\d+)/)?.[1]
         const trnamt = trn.match(/<TRNAMT>([\d.-]+)/)?.[1]
-        const fitid = trn.match(/<FITID>(\S+)/)?.[1]
+        const fitid = trn.match(/<FITID>([^<\s]+)/)?.[1]
         const memo = trn.match(/<MEMO>([^<]+)/)?.[1]
         
         if (dtposted && trnamt && fitid) {
-          // Verificar se já existe
-          const duplicado = await checkOFXDuplicado(fitid)
+          // Limpar FITID
+          const cleanFitid = fitid.replace(/[<>\/]/g, '').trim()
+          
+          // Deduplicar dentro do arquivo
+          if (fitidsNoArquivo.has(cleanFitid)) {
+            continue // Pular duplicado interno
+          }
+          fitidsNoArquivo.add(cleanFitid)
+          
+          // Verificar duplicação no banco (usando a função simples para preview)
+          const duplicado = await checkOFXDuplicado(cleanFitid)
           
           transactions.push({
-            id: fitid,
+            id: cleanFitid,
             tipo: Number(trnamt) >= 0 ? 'entrada' : 'saida',
             valor: Math.abs(Number(trnamt)),
             data: `${dtposted.slice(0,4)}-${dtposted.slice(4,6)}-${dtposted.slice(6,8)}`,
             descricao: memo || trntype,
-            duplicado
+            duplicado,
+            metodoDuplicacao: duplicado ? 'fitid' : null
           })
         }
       }
@@ -475,34 +510,167 @@ export default function FinanceiroPage() {
   }
 
   const handleImportOFX = async () => {
+    // Marcar que tentou importar
+    setAttemptedImport(true)
+    setImportResult(null)
+    
+    // Validar conta bancária
     if (!filterContaBancaria) {
-      alert('Selecione uma conta bancária')
+      setMissingContaBancaria(true)
+      setTimeout(() => {
+        contaBancariaSelectRef.current?.focus()
+        contaBancariaSelectRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 100)
       return
+    }
+    setMissingContaBancaria(false)
+    
+    // Identificar transações sem categoria (apenas não-duplicados)
+    const transacoesParaImportar = ofxData.filter(t => !t.duplicado)
+    const semCategoria = transacoesParaImportar.filter(t => !ofxCategorizacao[t.id])
+    
+    if (semCategoria.length > 0) {
+      // Bloquear importação e destacar itens
+      const missingIds = semCategoria.map(t => t.id)
+      setMissingCategoryIds(missingIds)
+      
+      // Scroll para o primeiro item sem categoria
+      setTimeout(() => {
+        const firstMissingId = missingIds[0]
+        const rowRef = ofxRowRefs.current[firstMissingId]
+        const selectRef = ofxSelectRefs.current[firstMissingId]
+        
+        if (rowRef) {
+          rowRef.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+        if (selectRef) {
+          setTimeout(() => selectRef.focus(), 300)
+        }
+      }, 100)
+      
+      return // Não continua com a importação
     }
     
     setSaving(true)
+    
+    // Resultado da importação
+    const resultado: ResultadoImportacaoOFX = {
+      importados: 0,
+      duplicadosFitid: 0,
+      duplicadosFingerprint: 0,
+      erros: 0,
+      detalhes: []
+    }
+    
     try {
-      for (const trn of ofxData.filter(t => !t.duplicado)) {
-        await createLancamentoFinanceiro({
-          conta_bancaria_id: filterContaBancaria,
-          tipo: trn.tipo,
-          valor: trn.valor,
+      for (const trn of transacoesParaImportar) {
+        const categoriaId = ofxCategorizacao[trn.id]
+        
+        // Garantia defensiva: não permitir categoria null
+        if (!categoriaId) {
+          resultado.erros++
+          resultado.detalhes.push({
+            descricao: trn.descricao,
+            status: 'erro',
+            mensagem: 'Categoria não definida'
+          })
+          continue
+        }
+        
+        // Verificação avançada de duplicação (re-checar antes do insert para garantia)
+        const checkDup = await checkOFXDuplicadoAvancado({
+          fitid: trn.id,
+          contaId: filterContaBancaria,
           data: trn.data,
-          descricao: trn.descricao,
-          categoria_id: ofxCategorizacao[trn.id] || null,
-          identificador_externo: trn.id,
-          conciliado: false
+          valor: trn.valor,
+          descricao: trn.descricao
         })
+        
+        if (checkDup.duplicado) {
+          if (checkDup.metodo === 'fitid') {
+            resultado.duplicadosFitid++
+            resultado.detalhes.push({
+              descricao: trn.descricao,
+              status: 'duplicado_fitid',
+              mensagem: `Já existe (FITID: ${trn.id})`
+            })
+          } else {
+            resultado.duplicadosFingerprint++
+            resultado.detalhes.push({
+              descricao: trn.descricao,
+              status: 'duplicado_fingerprint',
+              mensagem: 'Transação similar já existe'
+            })
+          }
+          continue
+        }
+        
+        // Inserir lançamento
+        try {
+          await createLancamentoFinanceiro({
+            conta_id: filterContaBancaria,
+            tipo: trn.tipo === 'entrada' ? 'receita' : 'despesa',
+            valor: trn.valor,
+            data_lancamento: trn.data,
+            descricao: trn.descricao,
+            categoria_id: categoriaId,
+            ofx_fitid: trn.id,
+            ofx_data_importacao: new Date().toISOString(),
+            conciliado: false,
+            com_nota_fiscal: false
+          })
+          
+          resultado.importados++
+          resultado.detalhes.push({
+            descricao: trn.descricao,
+            status: 'importado'
+          })
+        } catch (insertErr) {
+          console.error('Erro ao inserir lançamento:', insertErr)
+          resultado.erros++
+          resultado.detalhes.push({
+            descricao: trn.descricao,
+            status: 'erro',
+            mensagem: insertErr instanceof Error ? insertErr.message : 'Erro desconhecido'
+          })
+        }
       }
       
+      // Mostrar resultado
+      setImportResult(resultado)
+      
       await loadData()
-      setIsOFXModalOpen(false)
-      setOfxData([])
+      
+      // Só fechar modal se importou tudo com sucesso
+      if (resultado.erros === 0) {
+        // Manter modal aberto para mostrar resultado
+        setTimeout(() => {
+          setIsOFXModalOpen(false)
+          setOfxData([])
+          setOfxCategorizacao({})
+          setAttemptedImport(false)
+          setMissingCategoryIds([])
+          setImportResult(null)
+        }, 3000)
+      }
     } catch (err) {
       console.error('Erro ao importar:', err)
-      alert('Erro ao importar lançamentos')
+      alert('Erro ao importar lançamentos: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
     } finally {
       setSaving(false)
+    }
+  }
+  
+  // Handler para selecionar categoria - remove da lista de pendentes
+  const handleCategoriaChange = (trnId: string, categoriaId: number) => {
+    setOfxCategorizacao(prev => ({
+      ...prev,
+      [trnId]: categoriaId
+    }))
+    
+    // Remover do missingCategoryIds se estava marcado
+    if (missingCategoryIds.includes(trnId)) {
+      setMissingCategoryIds(prev => prev.filter(id => id !== trnId))
     }
   }
 
@@ -741,7 +909,17 @@ export default function FinanceiroPage() {
                         </div>
                       </td>
                       <td className="text-dark-300">
-                        {fornecedores.find(f => f.id === conta.fornecedor_id)?.razao_social || '-'}
+                        {conta.fornecedor_id ? (
+                          <button 
+                            onClick={() => {
+                              setSelectedFornecedorId(conta.fornecedor_id)
+                              setFornecedorModalOpen(true)
+                            }}
+                            className="text-primary-400 hover:text-primary-300 transition-colors"
+                          >
+                            {fornecedores.find(f => f.id === conta.fornecedor_id)?.razao_social || 'Ver Fornecedor'}
+                          </button>
+                        ) : '-'}
                       </td>
                       <td className="text-dark-300">{formatDate(conta.data_vencimento)}</td>
                       <td className="text-right font-medium text-white">{formatCurrency(conta.valor)}</td>
@@ -832,8 +1010,18 @@ export default function FinanceiroPage() {
                         </div>
                       </td>
                       <td className="text-dark-300">
-                        {clientes.find(c => c.id === conta.cliente_id)?.nome || 
-                         clientes.find(c => c.id === conta.cliente_id)?.razao_social || '-'}
+                        {conta.cliente_id ? (
+                          <button 
+                            onClick={() => {
+                              setSelectedClienteId(conta.cliente_id)
+                              setClienteModalOpen(true)
+                            }}
+                            className="text-primary-400 hover:text-primary-300 transition-colors"
+                          >
+                            {clientes.find(c => c.id === conta.cliente_id)?.nome || 
+                             clientes.find(c => c.id === conta.cliente_id)?.razao_social || 'Ver Cliente'}
+                          </button>
+                        ) : '-'}
                       </td>
                       <td className="text-dark-300">{formatDate(conta.data_vencimento)}</td>
                       <td className="text-right font-medium text-white">{formatCurrency(conta.valor)}</td>
@@ -1438,23 +1626,59 @@ export default function FinanceiroPage() {
       {/* Modal Importação OFX */}
       <Modal
         isOpen={isOFXModalOpen}
-        onClose={() => { setIsOFXModalOpen(false); setOfxData([]) }}
+        onClose={() => { 
+          setIsOFXModalOpen(false)
+          setOfxData([])
+          setOfxCategorizacao({})
+          setAttemptedImport(false)
+          setMissingCategoryIds([])
+          setMissingContaBancaria(false)
+          setImportResult(null)
+        }}
         title="Importar Extrato OFX"
         size="xl"
       >
         <div className="space-y-4">
+          {/* Alerta de erros */}
+          {attemptedImport && (missingContaBancaria || missingCategoryIds.length > 0) && (
+            <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+              <div className="text-sm text-red-300">
+                {missingContaBancaria && (
+                  <div><strong>Selecione uma conta bancária.</strong></div>
+                )}
+                {missingCategoryIds.length > 0 && (
+                  <div>
+                    <strong>Existem {missingCategoryIds.length} {missingCategoryIds.length === 1 ? 'item' : 'itens'} sem categoria.</strong>
+                    {' '}Preencha todas as categorias para importar.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          
           <div>
             <label className="block text-sm text-dark-300 mb-2">Conta Bancária *</label>
             <select
+              ref={contaBancariaSelectRef}
               value={filterContaBancaria || ''}
-              onChange={(e) => setFilterContaBancaria(Number(e.target.value))}
-              className="input w-full"
+              onChange={(e) => {
+                setFilterContaBancaria(Number(e.target.value))
+                if (e.target.value) setMissingContaBancaria(false)
+              }}
+              className={`input w-full ${attemptedImport && missingContaBancaria ? 'border-red-500 ring-1 ring-red-500' : ''}`}
             >
               <option value="">Selecione a conta...</option>
               {contasBancarias.map(c => (
                 <option key={c.id} value={c.id}>{c.nome}</option>
               ))}
             </select>
+            {attemptedImport && missingContaBancaria && (
+              <div className="flex items-center gap-1 text-xs text-red-400 mt-1">
+                <AlertCircle className="w-3 h-3" />
+                Conta bancária obrigatória
+              </div>
+            )}
           </div>
           
           <div className="max-h-96 overflow-y-auto">
@@ -1465,53 +1689,105 @@ export default function FinanceiroPage() {
                   <th>Descrição</th>
                   <th>Tipo</th>
                   <th className="text-right">Valor</th>
-                  <th>Categoria</th>
+                  <th>Categoria *</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {ofxData.map((trn) => (
-                  <tr key={trn.id} className={trn.duplicado ? 'opacity-50' : ''}>
-                    <td className="text-dark-300">{formatDate(trn.data)}</td>
-                    <td className="text-white">{trn.descricao}</td>
-                    <td>
-                      <Badge variant={trn.tipo === 'entrada' ? 'success' : 'danger'}>
-                        {trn.tipo === 'entrada' ? 'Entrada' : 'Saída'}
-                      </Badge>
-                    </td>
-                    <td className={`text-right font-medium ${trn.tipo === 'entrada' ? 'text-green-400' : 'text-red-400'}`}>
-                      {formatCurrency(trn.valor)}
-                    </td>
-                    <td>
-                      <select
-                        value={ofxCategorizacao[trn.id] || ''}
-                        onChange={(e) => setOfxCategorizacao({
-                          ...ofxCategorizacao,
-                          [trn.id]: Number(e.target.value)
-                        })}
-                        className="input text-sm"
-                        disabled={trn.duplicado}
-                      >
-                        <option value="">Selecione...</option>
-                        {categorias
-                          .filter(c => c.tipo === (trn.tipo === 'entrada' ? 'receita' : 'despesa'))
-                          .map(c => (
-                            <option key={c.id} value={c.id}>{c.nome}</option>
-                          ))}
-                      </select>
-                    </td>
-                    <td>
-                      {trn.duplicado ? (
-                        <Badge variant="warning">Duplicado</Badge>
-                      ) : (
-                        <Badge variant="success">Novo</Badge>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {ofxData.map((trn) => {
+                  const isMissing = attemptedImport && missingCategoryIds.includes(trn.id)
+                  
+                  return (
+                    <tr 
+                      key={trn.id} 
+                      ref={(el) => { ofxRowRefs.current[trn.id] = el }}
+                      className={`
+                        ${trn.duplicado ? 'opacity-50' : ''}
+                        ${isMissing ? 'bg-red-500/10 border-l-2 border-l-red-500' : ''}
+                      `}
+                    >
+                      <td className="text-dark-300">{formatDate(trn.data)}</td>
+                      <td className="text-white">{trn.descricao}</td>
+                      <td>
+                        <Badge variant={trn.tipo === 'entrada' ? 'success' : 'danger'}>
+                          {trn.tipo === 'entrada' ? 'Entrada' : 'Saída'}
+                        </Badge>
+                      </td>
+                      <td className={`text-right font-medium ${trn.tipo === 'entrada' ? 'text-green-400' : 'text-red-400'}`}>
+                        {formatCurrency(trn.valor)}
+                      </td>
+                      <td>
+                        <div className="flex flex-col gap-1">
+                          <select
+                            ref={(el) => { ofxSelectRefs.current[trn.id] = el }}
+                            value={ofxCategorizacao[trn.id] || ''}
+                            onChange={(e) => handleCategoriaChange(trn.id, Number(e.target.value))}
+                            className={`input text-sm ${isMissing ? 'border-red-500 ring-1 ring-red-500' : ''}`}
+                            disabled={trn.duplicado}
+                          >
+                            <option value="">Selecione...</option>
+                            {categorias
+                              .filter(c => c.tipo === (trn.tipo === 'entrada' ? 'receita' : 'despesa'))
+                              .map(c => (
+                                <option key={c.id} value={c.id}>{c.nome}</option>
+                              ))}
+                          </select>
+                          {isMissing && (
+                            <div className="flex items-center gap-1 text-xs text-red-400">
+                              <AlertCircle className="w-3 h-3" />
+                              Categoria obrigatória
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        {trn.duplicado ? (
+                          <Badge variant="warning">Duplicado</Badge>
+                        ) : isMissing ? (
+                          <Badge variant="danger">Pendente</Badge>
+                        ) : (
+                          <Badge variant="success">Novo</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
+          
+          {/* Resultado da Importação */}
+          {importResult && (
+            <div className={`p-4 rounded-lg border ${
+              importResult.erros > 0 
+                ? 'bg-red-500/10 border-red-500/30' 
+                : 'bg-green-500/10 border-green-500/30'
+            }`}>
+              <h4 className={`font-medium mb-2 ${
+                importResult.erros > 0 ? 'text-red-400' : 'text-green-400'
+              }`}>
+                {importResult.erros > 0 ? '⚠️ Importação parcial' : '✅ Importação concluída'}
+              </h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="bg-dark-700 p-2 rounded">
+                  <span className="text-dark-400">Importados:</span>
+                  <span className="text-green-400 ml-2 font-medium">{importResult.importados}</span>
+                </div>
+                <div className="bg-dark-700 p-2 rounded">
+                  <span className="text-dark-400">Dup. FITID:</span>
+                  <span className="text-yellow-400 ml-2 font-medium">{importResult.duplicadosFitid}</span>
+                </div>
+                <div className="bg-dark-700 p-2 rounded">
+                  <span className="text-dark-400">Dup. Similar:</span>
+                  <span className="text-orange-400 ml-2 font-medium">{importResult.duplicadosFingerprint}</span>
+                </div>
+                <div className="bg-dark-700 p-2 rounded">
+                  <span className="text-dark-400">Erros:</span>
+                  <span className="text-red-400 ml-2 font-medium">{importResult.erros}</span>
+                </div>
+              </div>
+            </div>
+          )}
           
           <div className="flex items-center justify-between pt-4 border-t border-dark-700">
             <div className="text-sm text-dark-400">
@@ -1523,12 +1799,23 @@ export default function FinanceiroPage() {
               )}
             </div>
             <div className="flex gap-3">
-              <Button variant="secondary" onClick={() => { setIsOFXModalOpen(false); setOfxData([]) }}>
+              <Button 
+                variant="secondary" 
+                onClick={() => { 
+                  setIsOFXModalOpen(false)
+                  setOfxData([])
+                  setOfxCategorizacao({})
+                  setAttemptedImport(false)
+                  setMissingCategoryIds([])
+                  setMissingContaBancaria(false)
+                  setImportResult(null)
+                }}
+              >
                 Cancelar
               </Button>
               <Button 
                 onClick={handleImportOFX} 
-                disabled={saving || !filterContaBancaria}
+                disabled={saving}
               >
                 {saving ? 'Importando...' : 'Importar'}
               </Button>
@@ -1536,6 +1823,23 @@ export default function FinanceiroPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Modais de Detalhes */}
+      <ClienteDetailModal 
+        isOpen={clienteModalOpen} 
+        onClose={() => setClienteModalOpen(false)} 
+        clienteId={selectedClienteId} 
+      />
+      <FornecedorDetailModal 
+        isOpen={fornecedorModalOpen} 
+        onClose={() => setFornecedorModalOpen(false)} 
+        fornecedorId={selectedFornecedorId} 
+      />
+      <VendaDetailModal 
+        isOpen={vendaModalOpen} 
+        onClose={() => setVendaModalOpen(false)} 
+        vendaId={selectedVendaId} 
+      />
     </div>
   )
 }

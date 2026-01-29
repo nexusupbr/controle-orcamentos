@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
+import { VendaDetailModal } from '@/components/ui/DetailModals'
 import { 
   Cliente, EnderecoCliente,
   fetchClientes, createCliente, updateCliente, deleteCliente, consultarCNPJ,
@@ -130,26 +131,75 @@ export default function ClientesPage() {
     finally { setLoading(false) }
   }
 
-  const filteredClientes = clientes.filter(c => {
-    // Busca por texto - apenas por nome, razão social ou nome fantasia
-    const searchLower = searchTerm.toLowerCase().trim()
-    
-    const matchSearch = searchTerm.trim() === '' || (
-      (c.nome && c.nome.toLowerCase().includes(searchLower)) ||
-      (c.razao_social && c.razao_social.toLowerCase().includes(searchLower)) ||
-      (c.nome_fantasia && c.nome_fantasia.toLowerCase().includes(searchLower))
-    )
-    
-    // Filtro por tipo pessoa (PF/PJ)
-    const matchTipo = filterTipo === 'todos' || c.tipo_pessoa === filterTipo
-    
-    // Filtro por tipo cadastro (cliente/fornecedor)
-    const matchCadastro = filterCadastro === 'todos' || 
-      c.tipo_cadastro === filterCadastro || 
-      c.tipo_cadastro === 'ambos'
-    
-    return matchSearch && matchTipo && matchCadastro
-  })
+  // Função auxiliar para obter o nome de exibição (PF usa nome, PJ usa razão_social)
+  const getNomeExibicao = (c: Cliente): string => {
+    return (c.nome || c.razao_social || c.nome_fantasia || '').trim()
+  }
+
+  // Filtrar e ordenar clientes - PF e PJ misturados, ordenados alfabeticamente
+  const filteredClientes = clientes
+    .filter(c => {
+      // Normalizar busca
+      const searchLower = searchTerm.toLowerCase().trim()
+      const searchLimpo = searchTerm.replace(/\D/g, '') // Apenas dígitos para CPF/CNPJ
+      
+      // Se não há termo de busca, inclui todos
+      if (!searchLower) {
+        // Filtro por tipo pessoa (PF/PJ)
+        const matchTipo = filterTipo === 'todos' || c.tipo_pessoa === filterTipo
+        // Filtro por tipo cadastro (cliente/fornecedor)
+        const matchCadastro = filterCadastro === 'todos' || 
+          c.tipo_cadastro === filterCadastro || 
+          c.tipo_cadastro === 'ambos'
+        return matchTipo && matchCadastro
+      }
+      
+      // Campos de texto (com proteção contra null/undefined)
+      const nome = (c.nome ?? '').toLowerCase()
+      const razaoSocial = (c.razao_social ?? '').toLowerCase()
+      const nomeFantasia = (c.nome_fantasia ?? '').toLowerCase()
+      const email = (c.email ?? '').toLowerCase()
+      const telefone = (c.telefone ?? '')
+      const celular = (c.celular ?? '')
+      
+      // Campos numéricos (apenas dígitos)
+      const cpfLimpo = (c.cpf ?? '').replace(/\D/g, '')
+      const cnpjLimpo = (c.cnpj ?? '').replace(/\D/g, '')
+      const telefoneLimpo = telefone.replace(/\D/g, '')
+      const celularLimpo = celular.replace(/\D/g, '')
+      
+      // Busca por texto (nome, razão social, nome fantasia, email)
+      const matchTexto = nome.includes(searchLower) ||
+        razaoSocial.includes(searchLower) ||
+        nomeFantasia.includes(searchLower) ||
+        email.includes(searchLower)
+      
+      // Busca por número (CPF, CNPJ, telefone, celular) - só se searchLimpo tiver dígitos
+      const matchNumero = searchLimpo.length > 0 && (
+        cpfLimpo.includes(searchLimpo) ||
+        cnpjLimpo.includes(searchLimpo) ||
+        telefoneLimpo.includes(searchLimpo) ||
+        celularLimpo.includes(searchLimpo)
+      )
+      
+      const matchSearch = matchTexto || matchNumero
+      
+      // Filtro por tipo pessoa (PF/PJ)
+      const matchTipo = filterTipo === 'todos' || c.tipo_pessoa === filterTipo
+      
+      // Filtro por tipo cadastro (cliente/fornecedor)
+      const matchCadastro = filterCadastro === 'todos' || 
+        c.tipo_cadastro === filterCadastro || 
+        c.tipo_cadastro === 'ambos'
+      
+      return matchSearch && matchTipo && matchCadastro
+    })
+    // Ordenar alfabeticamente por nome de exibição (mistura PF e PJ)
+    .sort((a, b) => {
+      const nomeA = getNomeExibicao(a).toLowerCase()
+      const nomeB = getNomeExibicao(b).toLowerCase()
+      return nomeA.localeCompare(nomeB, 'pt-BR')
+    })
 
   const handleConsultarCNPJ = async () => {
     const cnpj = formData.cnpj.replace(/\D/g, '')
@@ -585,7 +635,7 @@ export default function ClientesPage() {
 
       <div className="glass-card p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative md:col-span-2"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" /><input type="text" placeholder="Buscar por nome, razão social ou nome fantasia..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input pl-12 w-full" /></div>
+          <div className="relative md:col-span-2"><Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" /><input type="text" placeholder="Buscar por nome, razão social, CPF ou CNPJ..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input pl-12 w-full" /></div>
           <select value={filterTipo} onChange={(e) => setFilterTipo(e.target.value as any)} className="input"><option value="todos">Todos os tipos</option><option value="PF">Pessoa Física</option><option value="PJ">Pessoa Jurídica</option></select>
         </div>
         {selectedIds.size > 0 && (
