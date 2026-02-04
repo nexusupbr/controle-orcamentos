@@ -366,26 +366,44 @@ export default function EstoquePage() {
     }
   }
 
-  // Função para importar CSV de produtos
+  // Função para importar CSV de produtos (corrigida para tratar aspas corretamente)
   const parseCSVLine = (line: string, delimiter: string = ','): string[] => {
     const result: string[] = []
     let current = ''
     let inQuotes = false
+    let i = 0
     
-    for (let i = 0; i < line.length; i++) {
+    while (i < line.length) {
       const char = line[i]
+      
       if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          // Aspas duplas escapadas dentro de campo com aspas
+          current += '"'
+          i += 2
+          continue
+        }
+        // Toggle estado de aspas
         inQuotes = !inQuotes
-      } else if (char === delimiter && !inQuotes) {
-        // Remove aspas residuais e espaços
-        result.push(current.replace(/"/g, '').trim())
-        current = ''
-      } else {
-        current += char
+        i++
+        continue
       }
+      
+      if (char === delimiter && !inQuotes) {
+        // Fim do campo - adiciona ao resultado
+        result.push(current.trim())
+        current = ''
+        i++
+        continue
+      }
+      
+      // Caractere normal - adiciona ao campo atual
+      current += char
+      i++
     }
-    // Remove aspas residuais do último campo
-    result.push(current.replace(/"/g, '').trim())
+    
+    // Adiciona o último campo
+    result.push(current.trim())
     return result
   }
 

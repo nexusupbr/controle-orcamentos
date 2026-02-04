@@ -676,16 +676,22 @@ export async function upsertProdutoPorImportacao(
       updateData.codigo = item.codigo
     }
     
-    // Se atualizarVenda = true, valor_venda = valor_custo (sem margem)
+    // Se atualizarVenda = true, recalcula preço de venda MANTENDO a margem existente
     if (atualizarVenda) {
-      updateData.valor_venda = novoCusto
-      updateData.margem_lucro = 0
+      const margemExistente = existente.margem_lucro || 0
+      // Recalcular preço de venda: custo * (1 + margem/100)
+      const novoPrecoVenda = round2(novoCusto * (1 + margemExistente / 100))
+      updateData.valor_venda = novoPrecoVenda
+      // Manter a margem existente (não zerar!)
     }
     
     console.log('[upsertProdutoPorImportacao] Atualizando produto:', {
       id: existente.id,
       nome: existente.nome,
-      updateData,
+      custoAnterior: existente.valor_custo,
+      novoCusto,
+      margemExistente: existente.margem_lucro,
+      novoPrecoVenda: updateData.valor_venda,
       atualizarVenda
     })
     

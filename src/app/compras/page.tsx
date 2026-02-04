@@ -18,7 +18,8 @@ import {
   createMovimentacaoEstoque, deleteNotaFiscalEntradaCascade,
   upsertProdutoPorImportacao, incrementarEstoqueProduto, ItemNFImportacao,
   createCategoriaFinanceira,
-  buscarLancamentoParaReconciliar, reconciliarLancamentoComNF, CandidatoReconciliacao
+  buscarLancamentoParaReconciliar, reconciliarLancamentoComNF, CandidatoReconciliacao,
+  fetchNotaFiscalByChave
 } from '@/lib/database'
 import { formatCurrency, formatDate, normalizeUnidade } from '@/lib/utils'
 
@@ -284,6 +285,27 @@ export default function ComprasPage() {
       
       const dados = parseXML(content)
       if (dados) {
+        // Verificar se nota já foi importada ANTES de prosseguir
+        if (dados.chaveAcesso) {
+          const notaExistente = await fetchNotaFiscalByChave(dados.chaveAcesso)
+          if (notaExistente) {
+            alert(`⚠️ Esta nota fiscal já foi importada!
+
+Número: ${notaExistente.numero}
+Fornecedor: ${notaExistente.fornecedor_razao_social}
+Data de Entrada: ${formatDate(notaExistente.data_entrada)}
+
+A nota não pode ser importada novamente para evitar duplicação no estoque.
+
+Se você excluiu a nota e quer importar novamente, verifique se ela foi removida completamente do sistema.`)
+            // Limpar input para permitir nova seleção
+            if (fileInputRef.current) {
+              fileInputRef.current.value = ''
+            }
+            return
+          }
+        }
+        
         // Verificar fornecedor
         const fornecedor = await fetchFornecedorByCnpj(dados.fornecedor.cnpj)
         setFornecedorExistente(fornecedor)
@@ -304,6 +326,16 @@ export default function ComprasPage() {
     setProcessing(true)
     
     try {
+      // 0. Verificar se a nota já foi importada (evita duplicação de estoque!)
+      if (dadosNF.chaveAcesso) {
+        const notaExistente = await fetchNotaFiscalByChave(dadosNF.chaveAcesso)
+        if (notaExistente) {
+          alert(`⚠️ Esta nota fiscal já foi importada anteriormente!\n\nNúmero: ${notaExistente.numero}\nData: ${formatDate(notaExistente.data_entrada)}\n\nPara evitar duplicação de estoque, a importação foi cancelada.`)
+          setProcessing(false)
+          return
+        }
+      }
+
       // 1. Cadastrar/atualizar fornecedor
       let fornecedorId = fornecedorExistente?.id
       if (!fornecedorExistente) {
@@ -386,7 +418,7 @@ export default function ComprasPage() {
           acao: resultado.acao === 'criado' ? 'cadastrado' : 'existente'
         })
 
-        // Lançar movimentação de estoque e incrementar quantidade
+        // Lançar movimentação de estoque (o trigger do banco automaticamente incrementa o estoque)
         if (lancarEstoque) {
           await createMovimentacaoEstoque({
             produto_id: resultado.produtoId,
@@ -398,9 +430,9 @@ export default function ComprasPage() {
             motivo: `Entrada NF ${dadosNF.numero}`,
             data_movimentacao: new Date().toISOString()
           })
-          
-          // Incrementar estoque do produto
-          await incrementarEstoqueProduto(resultado.produtoId, prod.quantidade)
+          // NOTA: Não chamar incrementarEstoqueProduto aqui!
+          // O trigger "trigger_atualizar_estoque" no banco já faz isso automaticamente
+          // quando uma movimentação é inserida na tabela movimentacoes_estoque
         }
       }
 
