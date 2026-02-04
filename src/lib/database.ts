@@ -1140,7 +1140,7 @@ export async function fetchItensNotaEntrada(notaId: number): Promise<ItemNotaEnt
     .from('itens_nota_entrada')
     .select(`
       *,
-      produto:produtos(id, nome, codigo)
+      produto:produtos!itens_nota_entrada_produto_id_fkey(id, nome, codigo)
     `)
     .eq('nota_fiscal_id', notaId)
 

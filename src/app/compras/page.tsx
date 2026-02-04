@@ -11,7 +11,7 @@ import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
 import { FornecedorDetailModal, ProdutoDetailModal } from '@/components/ui/DetailModals'
 import { 
-  NotaFiscalEntrada, Produto, Fornecedor, CategoriaFinanceira,
+  NotaFiscalEntrada, Produto, Fornecedor, CategoriaFinanceira, ItemNotaEntrada,
   fetchNotasFiscaisEntrada, createNotaFiscalEntrada, createItemNotaEntrada,
   fetchProdutos, fetchFornecedores, createFornecedor, fetchFornecedorByCnpj,
   fetchCategoriasFinanceiras, createLancamentoFinanceiro, createContaPagar,
@@ -19,7 +19,7 @@ import {
   upsertProdutoPorImportacao, incrementarEstoqueProduto, ItemNFImportacao,
   createCategoriaFinanceira,
   buscarLancamentoParaReconciliar, reconciliarLancamentoComNF, CandidatoReconciliacao,
-  fetchNotaFiscalByChave
+  fetchNotaFiscalByChave, findProdutoExistente, fetchItensNotaEntrada
 } from '@/lib/database'
 import { formatCurrency, formatDate, normalizeUnidade } from '@/lib/utils'
 
@@ -128,6 +128,16 @@ export default function ComprasPage() {
     categoriaId: number | null
     formaPagamento: string
   } | null>(null)
+  
+  // Status dos produtos do XML (existente ou novo)
+  const [produtosStatus, setProdutosStatus] = useState<Map<number, { existente: boolean; produtoDb?: Produto }>>(new Map())
+  const [verificandoProdutos, setVerificandoProdutos] = useState(false)
+  
+  // Modal para ver produtos de uma nota já importada
+  const [showProdutosNotaModal, setShowProdutosNotaModal] = useState(false)
+  const [produtosNotaSelecionada, setProdutosNotaSelecionada] = useState<ItemNotaEntrada[]>([])
+  const [notaSelecionadaParaProdutos, setNotaSelecionadaParaProdutos] = useState<NotaFiscalEntrada | null>(null)
+  const [loadingProdutosNota, setLoadingProdutosNota] = useState(false)
   
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -311,6 +321,34 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
         setFornecedorExistente(fornecedor)
         
         setDadosNF(dados)
+        
+        // Verificar status de cada produto (existente ou novo)
+        setVerificandoProdutos(true)
+        const statusMap = new Map<number, { existente: boolean; produtoDb?: Produto }>()
+        
+        for (let i = 0; i < dados.produtos.length; i++) {
+          const prod = dados.produtos[i]
+          const itemNF: ItemNFImportacao = {
+            codigo: prod.codigo,
+            descricao: prod.descricao,
+            ncm: prod.ncm,
+            cfop: prod.cfop,
+            unidade: prod.unidade,
+            quantidade: prod.quantidade,
+            valorUnitario: prod.valorUnitario,
+            valorTotal: prod.valorTotal,
+            gtin: prod.gtin
+          }
+          
+          const produtoExistente = await findProdutoExistente(itemNF)
+          statusMap.set(i, {
+            existente: !!produtoExistente,
+            produtoDb: produtoExistente || undefined
+          })
+        }
+        
+        setProdutosStatus(statusMap)
+        setVerificandoProdutos(false)
         setStep('produtos')
       } else {
         alert('Erro ao processar XML. Verifique se o arquivo é válido.')
@@ -611,9 +649,35 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
     setCandidatosReconciliacao([])
     setShowReconciliacaoModal(false)
     setPendingNFData(null)
+    setProdutosStatus(new Map())
+    setVerificandoProdutos(false)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
+  }
+
+  // Abrir modal para ver produtos de uma nota já importada
+  const handleVerProdutosNota = async (nota: NotaFiscalEntrada, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setNotaSelecionadaParaProdutos(nota)
+    setLoadingProdutosNota(true)
+    setShowProdutosNotaModal(true)
+    
+    try {
+      const itens = await fetchItensNotaEntrada(nota.id)
+      setProdutosNotaSelecionada(itens)
+    } catch (err) {
+      console.error('Erro ao buscar produtos da nota:', err)
+      alert('Erro ao carregar produtos da nota')
+    } finally {
+      setLoadingProdutosNota(false)
+    }
+  }
+
+  const closeProdutosNotaModal = () => {
+    setShowProdutosNotaModal(false)
+    setProdutosNotaSelecionada([])
+    setNotaSelecionadaParaProdutos(null)
   }
 
   if (loading) {
@@ -802,14 +866,24 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                           </Badge>
                         )}
                       </div>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={(e) => openDeleteModal(nota, e)}
-                        leftIcon={<Trash2 className="w-4 h-4" />}
-                      >
-                        Excluir NF
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={(e) => handleVerProdutosNota(nota, e)}
+                          leftIcon={<Package className="w-4 h-4" />}
+                        >
+                          Ver Produtos
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={(e) => openDeleteModal(nota, e)}
+                          leftIcon={<Trash2 className="w-4 h-4" />}
+                        >
+                          Excluir NF
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -926,41 +1000,105 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                   </label>
                 </div>
                 
-                {/* Legenda */}
-                <div className="flex gap-4 mb-3 text-xs">
-                  <span className="text-dark-400">Ao importar:</span>
-                  <span className="text-green-400">• Produto existente = Atualiza custo e preço</span>
-                  <span className="text-yellow-400">• Produto novo = Cria automaticamente</span>
+                {/* Legenda e Resumo */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex gap-4 text-xs">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                      <span className="text-green-400">Existente ({Array.from(produtosStatus.values()).filter(s => s.existente).length})</span>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                      <span className="text-yellow-400">Novo ({Array.from(produtosStatus.values()).filter(s => !s.existente).length})</span>
+                    </span>
+                  </div>
+                  {verificandoProdutos && (
+                    <span className="text-xs text-dark-400 flex items-center gap-2">
+                      <LoadingSpinner size="sm" /> Verificando produtos...
+                    </span>
+                  )}
                 </div>
                 
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {dadosNF.produtos.map((prod, index) => (
-                    <div key={index} className="glass-card p-3">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs text-dark-400">#{prod.codigo}</span>
-                            <span className="font-medium text-white text-sm">{prod.descricao}</span>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {dadosNF.produtos.map((prod, index) => {
+                    const status = produtosStatus.get(index)
+                    const isExistente = status?.existente
+                    const produtoDb = status?.produtoDb
+                    
+                    return (
+                      <div 
+                        key={index} 
+                        className={`glass-card p-3 border-l-4 ${
+                          isExistente ? 'border-l-green-500' : 'border-l-yellow-500'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs text-dark-400">#{prod.codigo}</span>
+                              <span className="font-medium text-white text-sm">{prod.descricao}</span>
+                            </div>
+                            
+                            {/* EAN/GTIN */}
                             {prod.gtin && prod.gtin.length > 3 && !/^0+$/.test(prod.gtin) && (
-                              <span className="text-xs text-dark-500">EAN: {prod.gtin}</span>
+                              <div className="text-xs text-dark-500 mb-1">EAN: {prod.gtin}</div>
+                            )}
+                            
+                            {/* Info da NF */}
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-dark-400 mb-2">
+                              <span>NCM: {prod.ncm}</span>
+                              <span className="text-primary-400 font-medium">Qtd: {prod.quantidade} {prod.unidade}</span>
+                              <span>Custo NF: {formatCurrency(prod.valorUnitario)}</span>
+                              <span className="text-primary-400 font-medium">Total: {formatCurrency(prod.valorTotal)}</span>
+                            </div>
+                            
+                            {/* Info do produto existente no sistema */}
+                            {isExistente && produtoDb && (
+                              <div className="bg-green-500/10 rounded p-2 text-xs">
+                                <div className="flex items-center gap-2 text-green-400 font-medium mb-1">
+                                  <CheckCircle className="w-3 h-3" />
+                                  Produto encontrado no sistema
+                                </div>
+                                <div className="grid grid-cols-2 gap-x-4 text-dark-300">
+                                  <span>Estoque atual: <span className="text-white font-medium">{produtoDb.quantidade_estoque} {produtoDb.unidade}</span></span>
+                                  <span>Custo atual: <span className="text-white">{formatCurrency(produtoDb.valor_custo)}</span></span>
+                                  <span>Venda atual: <span className="text-white">{formatCurrency(produtoDb.valor_venda)}</span></span>
+                                  <span>Margem: <span className="text-white">{produtoDb.margem_lucro?.toFixed(1) || 0}%</span></span>
+                                </div>
+                                {atualizarFormadorPreco && produtoDb.margem_lucro && produtoDb.margem_lucro > 0 && (
+                                  <div className="mt-1 text-dark-400">
+                                    → Novo preço venda: <span className="text-primary-400 font-medium">
+                                      {formatCurrency(prod.valorUnitario * (1 + (produtoDb.margem_lucro || 0) / 100))}
+                                    </span>
+                                    <span className="text-dark-500"> (mantém margem de {produtoDb.margem_lucro?.toFixed(0)}%)</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            
+                            {/* Info de produto novo */}
+                            {!isExistente && !verificandoProdutos && (
+                              <div className="bg-yellow-500/10 rounded p-2 text-xs">
+                                <div className="flex items-center gap-2 text-yellow-400 font-medium">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  Produto será cadastrado automaticamente
+                                </div>
+                              </div>
                             )}
                           </div>
-                          <div className="flex gap-4 text-xs text-dark-400">
-                            <span>NCM: {prod.ncm}</span>
-                            <span>Qtd: {prod.quantidade} {prod.unidade}</span>
-                            <span>Custo Unit: {formatCurrency(prod.valorUnitario)}</span>
-                            <span className="text-primary-400 font-medium">Total: {formatCurrency(prod.valorTotal)}</span>
+                          
+                          <div className="flex items-center">
+                            <Badge 
+                              variant={isExistente ? 'success' : 'warning'} 
+                              className="text-xs"
+                            >
+                              {isExistente ? 'Atualizar' : 'Criar'}
+                            </Badge>
                           </div>
                         </div>
-                        
-                        <div className="flex items-center">
-                          <Badge variant="info" className="text-xs">
-                            Automático
-                          </Badge>
-                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
 
@@ -968,7 +1106,7 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                 <Button variant="secondary" onClick={() => setStep('upload')}>
                   Voltar
                 </Button>
-                <Button onClick={() => setStep('pagamento')}>
+                <Button onClick={() => setStep('pagamento')} disabled={verificandoProdutos}>
                   Próximo
                 </Button>
               </div>
@@ -1425,6 +1563,115 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
               disabled={!reconciliacaoSelecionada || processing}
             >
               {processing ? 'Processando...' : 'Reconciliar Selecionado'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal Ver Produtos da Nota */}
+      <Modal
+        isOpen={showProdutosNotaModal}
+        onClose={closeProdutosNotaModal}
+        title={`Produtos da NF ${notaSelecionadaParaProdutos?.numero || ''}`}
+        size="lg"
+      >
+        <div className="space-y-4">
+          {/* Info da Nota */}
+          {notaSelecionadaParaProdutos && (
+            <div className="glass-card p-4 mb-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <p className="text-dark-400">Fornecedor</p>
+                  <p className="text-white font-medium">{notaSelecionadaParaProdutos.fornecedor_razao_social}</p>
+                </div>
+                <div>
+                  <p className="text-dark-400">Data Entrada</p>
+                  <p className="text-white">{formatDate(notaSelecionadaParaProdutos.data_entrada)}</p>
+                </div>
+                <div>
+                  <p className="text-dark-400">Valor Total</p>
+                  <p className="text-white font-medium">{formatCurrency(notaSelecionadaParaProdutos.valor_total)}</p>
+                </div>
+                <div>
+                  <p className="text-dark-400">Qtd Produtos</p>
+                  <p className="text-white font-medium">{produtosNotaSelecionada.length} itens</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Lista de Produtos */}
+          {loadingProdutosNota ? (
+            <div className="flex justify-center py-8">
+              <LoadingSpinner size="lg" />
+            </div>
+          ) : produtosNotaSelecionada.length === 0 ? (
+            <div className="text-center py-8 text-dark-400">
+              Nenhum produto encontrado nesta nota
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {produtosNotaSelecionada.map((item, index) => (
+                <div key={item.id || index} className="glass-card p-3 hover:bg-dark-700/50 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-dark-400">#{item.codigo_produto_nf}</span>
+                        <span className="font-medium text-white text-sm">{item.descricao}</span>
+                        {item.acao === 'cadastrado' && (
+                          <Badge variant="warning" className="text-xs">Novo</Badge>
+                        )}
+                      </div>
+                      
+                      {/* Produto vinculado */}
+                      {item.produto && (
+                        <button
+                          onClick={() => {
+                            setSelectedProdutoId(item.produto_id)
+                            setProdutoModalOpen(true)
+                          }}
+                          className="text-xs text-primary-400 hover:text-primary-300 transition-colors mb-1 block"
+                        >
+                          → {(item.produto as any).nome} (Cód: {(item.produto as any).codigo || 'N/A'})
+                        </button>
+                      )}
+                      
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-dark-400">
+                        <span>NCM: {item.ncm || '-'}</span>
+                        <span>CFOP: {item.cfop || '-'}</span>
+                        <span className="text-primary-400 font-medium">
+                          Qtd: {item.quantidade} {item.unidade}
+                        </span>
+                        <span>Custo Unit: {formatCurrency(item.valor_unitario)}</span>
+                      </div>
+                    </div>
+                    
+                    <div className="text-right">
+                      <p className="text-lg font-bold text-primary-400">
+                        {formatCurrency(item.valor_total)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Totalizador */}
+          {produtosNotaSelecionada.length > 0 && (
+            <div className="border-t border-dark-700 pt-4 mt-4">
+              <div className="flex justify-between items-center">
+                <span className="text-dark-400">Total dos Produtos:</span>
+                <span className="text-xl font-bold text-white">
+                  {formatCurrency(produtosNotaSelecionada.reduce((acc, item) => acc + (item.valor_total || 0), 0))}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end pt-4">
+            <Button variant="secondary" onClick={closeProdutosNotaModal}>
+              Fechar
             </Button>
           </div>
         </div>
