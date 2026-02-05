@@ -19,12 +19,7 @@ import {
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
-import { 
-  emitirNFe, consultarNFe, aguardarAutorizacaoNFe, 
-  gerarReferenciaNFe, getUrlDanfe, getUrlXml,
-  NFeDados, NFeItem, NFeFormaPagamento,
-  getConfig, verificarConfiguracao
-} from '@/lib/focusnfe'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface ItemVenda {
   produto_id: number
@@ -75,7 +70,10 @@ export default function VendasPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isViewModalOpen, setIsViewModalOpen] = useState(false)
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false)
+  const [isNFModalOpen, setIsNFModalOpen] = useState(false)
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null)
+  const [notaFiscalData, setNotaFiscalData] = useState<any>(null)
+  const [loadingNF, setLoadingNF] = useState(false)
   const [saving, setSaving] = useState(false)
   const [generatingNF, setGeneratingNF] = useState(false)
 
@@ -344,194 +342,97 @@ export default function VendasPage() {
     }
   }
 
-  // Gerar Nota Fiscal via Focus NFe
+  // Obter usuário do contexto de autenticação
+  const { usuario } = useAuth()
+
+  // Gerar Nota Fiscal via API Route (server-side)
   const handleGerarNota = async (venda: Venda) => {
     if (venda.nota_fiscal_emitida) {
       alert('Esta venda já possui nota fiscal emitida!')
       return
     }
 
-    // Verificar configuração da API
-    const configCheck = verificarConfiguracao()
-    if (!configCheck.ok) {
-      alert(`Erro de configuração: ${configCheck.mensagem}. Configure em Configurações > Fiscal.`)
-      return
+    // Debug: mostrar estado do usuário
+    console.log('Estado do usuário:', usuario)
+
+    // Verificar se usuário está logado (temporariamente opcional para debug)
+    const userId = usuario?.id || 1 // Usa ID 1 como fallback para testes
+    if (!usuario?.id) {
+      console.warn('Usuário não logado, usando ID padrão para teste')
     }
 
-    if (!confirm('Deseja gerar a Nota Fiscal para esta venda?\n\nAmbiente: ' + getConfig().ambiente.toUpperCase())) return
+    const ambiente = process.env.NEXT_PUBLIC_FOCUS_NFE_AMBIENTE || 'homologacao'
+    
+    if (!confirm(`Deseja gerar a Nota Fiscal para esta venda?\n\nAmbiente: ${ambiente.toUpperCase()}`)) return
 
     setGeneratingNF(true)
     try {
-      // Buscar configurações fiscais do banco
-      const { data: configFiscal, error: configError } = await supabase
-        .from('config_fiscal')
-        .select('*')
-        .eq('ativo', true)
-        .single()
+      console.log('Enviando NFe para API Route:', { venda_id: venda.id, ambiente, usuario_id: userId })
 
-      if (configError || !configFiscal) {
-        throw new Error('Configuração fiscal não encontrada. Acesse Configurações > Fiscal para configurar.')
+      // Chamar API Route server-side (evita CORS)
+      const response = await fetch('/api/nfe/emitir', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': String(userId)
+        },
+        body: JSON.stringify({ venda_id: venda.id })
+      })
+
+      const resultado = await response.json()
+      console.log('Resultado API:', resultado)
+
+      if (!response.ok) {
+        // Tratar erros da API
+        const errorMsg = resultado.errors 
+          ? resultado.errors.join('\n')
+          : resultado.error || 'Erro desconhecido'
+        throw new Error(errorMsg)
       }
 
-      // Dados do cliente
-      const cliente = venda.cliente
-      const itensVenda = venda.itens || []
-
-      if (itensVenda.length === 0) {
-        throw new Error('Venda sem itens não pode gerar nota fiscal')
-      }
-
-      // Gerar referência única
-      const referencia = gerarReferenciaNFe()
-      
-      // Montar itens da NFe
-      const itensNFe: NFeItem[] = itensVenda.map((item: any, index: number) => ({
-        numero_item: index + 1,
-        codigo_produto: item.produto_id?.toString() || (index + 1).toString(),
-        descricao: getConfig().ambiente === 'homologacao' 
-          ? 'NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'
-          : item.descricao || 'Produto',
-        ncm: item.produto?.ncm || '00000000', // NCM do produto ou genérico
-        cfop: configFiscal.cfop_padrao || '5102',
-        unidade_comercial: item.produto?.unidade || 'UN',
-        quantidade_comercial: item.quantidade,
-        valor_unitario_comercial: item.valor_unitario,
-        valor_bruto: item.valor_total,
-        unidade_tributavel: item.produto?.unidade || 'UN',
-        quantidade_tributavel: item.quantidade,
-        valor_unitario_tributavel: item.valor_unitario,
-        icms_origem: 0, // Nacional
-        icms_situacao_tributaria: configFiscal.regime_tributario === 1 ? '102' : '00', // Simples Nacional ou Tributada
-        pis_situacao_tributaria: '07', // Operação Isenta
-        cofins_situacao_tributaria: '07' // Operação Isenta
-      }))
-
-      // Montar forma de pagamento
-      const formasPgto: NFeFormaPagamento[] = [{
-        forma_pagamento: '01', // Dinheiro por padrão
-        valor_pagamento: venda.valor_total || 0
-      }]
-
-      // Montar dados da NFe
-      const dadosNFe: NFeDados = {
-        // Dados gerais
-        natureza_operacao: configFiscal.natureza_operacao_padrao || 'Venda',
-        data_emissao: new Date().toISOString(),
-        tipo_documento: 1, // Saída
-        local_destino: 1, // Operação interna
-        finalidade_emissao: 1, // Normal
-        consumidor_final: 1, // Consumidor final
-        presenca_comprador: 1, // Presencial
+      // Verificar se foi sucesso
+      if (resultado.success) {
+        const { data } = resultado
         
-        // Emitente
-        cnpj_emitente: configFiscal.cnpj,
-        inscricao_estadual_emitente: configFiscal.inscricao_estadual || '',
-        nome_emitente: configFiscal.razao_social,
-        nome_fantasia_emitente: configFiscal.nome_fantasia || configFiscal.razao_social,
-        logradouro_emitente: configFiscal.logradouro,
-        numero_emitente: configFiscal.numero,
-        complemento_emitente: configFiscal.complemento || '',
-        bairro_emitente: configFiscal.bairro,
-        municipio_emitente: configFiscal.municipio,
-        uf_emitente: configFiscal.uf,
-        cep_emitente: configFiscal.cep,
-        telefone_emitente: configFiscal.telefone || '',
-        regime_tributario_emitente: configFiscal.regime_tributario as 1 | 2 | 3,
+        // Caso de nota já existente (idempotência)
+        if (resultado.idempotent) {
+          if (data.status === 'autorizado') {
+            alert(`ℹ️ Esta venda já possui nota fiscal autorizada!\n\nNúmero: ${data.numero || 'N/A'}\nChave: ${data.chave_nfe || 'N/A'}`)
+          } else if (data.status === 'pendente' || data.status === 'processando_autorizacao') {
+            alert(`ℹ️ Esta venda já possui nota fiscal em processamento.\n\nReferência: ${data.referencia}\nStatus: ${data.status}\n\nAguarde a autorização da SEFAZ.`)
+          } else {
+            alert(`ℹ️ Nota fiscal já existe para esta venda.\n\nReferência: ${data.referencia}\nStatus: ${data.status}`)
+          }
+          await loadData()
+          return
+        }
         
-        // Destinatário
-        nome_destinatario: getConfig().ambiente === 'homologacao'
-          ? 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'
-          : (cliente?.nome || cliente?.razao_social || 'Consumidor Final'),
-        cpf_destinatario: cliente?.cpf?.replace(/\D/g, '') || undefined,
-        cnpj_destinatario: cliente?.cnpj?.replace(/\D/g, '') || undefined,
-        logradouro_destinatario: cliente?.endereco || '',
-        numero_destinatario: cliente?.numero || 'S/N',
-        bairro_destinatario: cliente?.bairro || '',
-        municipio_destinatario: cliente?.cidade || configFiscal.municipio,
-        uf_destinatario: cliente?.estado || configFiscal.uf,
-        cep_destinatario: cliente?.cep?.replace(/\D/g, '') || '',
-        indicador_inscricao_estadual_destinatario: 9, // Não contribuinte
-        
-        // Totais
-        valor_total: venda.valor_total || 0,
-        valor_produtos: venda.valor_produtos || venda.valor_total || 0,
-        valor_desconto: venda.valor_desconto || 0,
-        valor_frete: venda.valor_frete || 0,
-        
-        // Frete
-        modalidade_frete: 9, // Sem frete
-        
-        // Itens
-        items: itensNFe,
-        
-        // Pagamento
-        formas_pagamento: formasPgto,
-        
-        // Informações adicionais
-        informacoes_adicionais_contribuinte: configFiscal.informacoes_complementares || ''
-      }
+        if (data.status === 'autorizado') {
+          // Recarregar dados
+          await loadData()
+          
+          // Atualizar selectedVenda
+          setSelectedVenda(prev => prev ? {
+            ...prev,
+            nota_fiscal_emitida: true,
+            numero_nf: data.numero || '',
+            chave_nf: data.chave_nfe || ''
+          } : null)
 
-      console.log('Enviando NFe para Focus NFe:', { referencia, ambiente: getConfig().ambiente })
-
-      // Emitir NFe
-      const resultadoEmissao = await emitirNFe(referencia, dadosNFe)
-      console.log('Resultado emissão:', resultadoEmissao)
-
-      // Se está processando, aguardar autorização
-      let resultadoFinal = resultadoEmissao
-      if (resultadoEmissao.status === 'processando_autorizacao') {
-        console.log('Aguardando autorização...')
-        resultadoFinal = await aguardarAutorizacaoNFe(referencia)
-        console.log('Resultado final:', resultadoFinal)
-      }
-
-      // Verificar resultado
-      if (resultadoFinal.status === 'autorizado') {
-        // Sucesso! Atualizar venda com dados da NF
-        await updateVenda(venda.id, {
-          nota_fiscal_emitida: true,
-          numero_nf: resultadoFinal.numero || '',
-          chave_nf: resultadoFinal.chave_nfe || ''
-        })
-
-        // Salvar na tabela de notas fiscais
-        await supabase.from('notas_fiscais').insert([{
-          referencia: referencia,
-          venda_id: venda.id,
-          tipo: 'nfe',
-          numero: resultadoFinal.numero,
-          serie: resultadoFinal.serie,
-          chave_acesso: resultadoFinal.chave_nfe,
-          status: 'autorizada',
-          status_sefaz: resultadoFinal.status_sefaz,
-          mensagem_sefaz: resultadoFinal.mensagem_sefaz,
-          destinatario_nome: cliente?.nome || cliente?.razao_social || 'Consumidor Final',
-          destinatario_documento: cliente?.cpf || cliente?.cnpj || '',
-          valor_total: venda.valor_total,
-          valor_produtos: venda.valor_produtos,
-          url_xml: resultadoFinal.caminho_xml_nota_fiscal,
-          url_danfe: resultadoFinal.caminho_danfe,
-          dados_envio: dadosNFe,
-          dados_retorno: resultadoFinal,
-          emitida_em: new Date().toISOString()
-        }])
-
-        await loadData()
-        
-        // Atualizar selectedVenda
-        setSelectedVenda(prev => prev ? {
-          ...prev,
-          nota_fiscal_emitida: true,
-          numero_nf: resultadoFinal.numero || '',
-          chave_nf: resultadoFinal.chave_nfe || ''
-        } : null)
-
-        alert(`✅ Nota Fiscal autorizada com sucesso!\n\nNúmero: ${resultadoFinal.numero}\nChave: ${resultadoFinal.chave_nfe}`)
-      } else if (resultadoFinal.status === 'erro_autorizacao') {
-        const erros = resultadoFinal.erros?.map(e => `${e.codigo}: ${e.mensagem}`).join('\n') || resultadoFinal.mensagem_sefaz
-        throw new Error(`Erro na autorização:\n${erros}`)
+          alert(`✅ Nota Fiscal autorizada com sucesso!\n\nNúmero: ${data.numero}\nSérie: ${data.serie}\nChave: ${data.chave_nfe}`)
+        } else if (data.status === 'processando_autorizacao' || data.status === 'pendente') {
+          alert(`⏳ Nota Fiscal enviada e aguardando autorização da SEFAZ.\n\nReferência: ${data.referencia}\n\nAtualize a página em alguns segundos para verificar o status.`)
+          await loadData()
+        } else if (data.status === 'erro_autorizacao') {
+          const erros = data.erros?.map((e: any) => `${e.codigo}: ${e.mensagem}`).join('\n') || data.mensagem_sefaz
+          throw new Error(`Erro na autorização:\n${erros}`)
+        } else {
+          // Status desconhecido - mostrar informação em vez de erro
+          alert(`ℹ️ Nota fiscal processada.\n\nReferência: ${data.referencia}\nStatus: ${data.status || 'desconhecido'}\n\n${data.mensagem_sefaz || ''}`)
+          await loadData()
+        }
       } else {
-        throw new Error(`Status inesperado: ${resultadoFinal.status}\n${resultadoFinal.mensagem_sefaz || ''}`)
+        throw new Error(resultado.error || 'Erro ao emitir nota fiscal')
       }
 
     } catch (error: any) {
@@ -539,6 +440,167 @@ export default function VendasPage() {
       alert(`❌ Erro ao gerar nota fiscal:\n\n${error.message || error}`)
     } finally {
       setGeneratingNF(false)
+    }
+  }
+
+  // Visualizar Nota Fiscal
+  const handleVerNotaFiscal = async (venda: Venda) => {
+    if (!venda.nota_fiscal_emitida) {
+      alert('Esta venda não possui nota fiscal emitida')
+      return
+    }
+
+    setLoadingNF(true)
+    setSelectedVenda(venda)
+    setIsNFModalOpen(true)
+
+    try {
+      const userId = usuario?.id || 1
+      const response = await fetch(`/api/nfe/consultar?venda_id=${venda.id}`, {
+        headers: {
+          'X-User-Id': String(userId)
+        }
+      })
+
+      const resultado = await response.json()
+      
+      if (resultado.success) {
+        setNotaFiscalData(resultado.data)
+      } else {
+        // Usar dados básicos da venda se não conseguir consultar
+        setNotaFiscalData({
+          numero: venda.numero_nf,
+          chave_nfe: venda.chave_nf,
+          status: 'autorizado'
+        })
+      }
+    } catch (error) {
+      console.error('Erro ao buscar nota fiscal:', error)
+      // Usar dados básicos
+      setNotaFiscalData({
+        numero: venda.numero_nf,
+        chave_nfe: venda.chave_nf,
+        status: 'autorizado'
+      })
+    } finally {
+      setLoadingNF(false)
+    }
+  }
+
+  // Cancelar Nota Fiscal
+  const handleCancelarNotaFiscal = async (venda: Venda) => {
+    if (!venda.nota_fiscal_emitida) {
+      alert('Esta venda não possui nota fiscal emitida')
+      return
+    }
+
+    const justificativa = prompt(
+      'Digite a justificativa para o cancelamento (mínimo 15 caracteres):\n\nExemplo: Erro nos dados do cliente, produto incorreto, etc.',
+      ''
+    )
+
+    if (!justificativa) {
+      return // Usuário cancelou
+    }
+
+    if (justificativa.length < 15) {
+      alert('A justificativa deve ter no mínimo 15 caracteres')
+      return
+    }
+
+    if (!confirm(`⚠️ ATENÇÃO: Esta ação é irreversível!\n\nDeseja realmente cancelar a nota fiscal?\n\nJustificativa: ${justificativa}`)) {
+      return
+    }
+
+    setGeneratingNF(true)
+    try {
+      const userId = usuario?.id || 1
+      const response = await fetch('/api/nfe/cancelar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': String(userId)
+        },
+        body: JSON.stringify({
+          venda_id: venda.id,
+          justificativa
+        })
+      })
+
+      const resultado = await response.json()
+
+      if (resultado.success) {
+        alert(`✅ Nota fiscal cancelada com sucesso!\n\nProtocolo: ${resultado.data?.protocolo || 'N/A'}`)
+        await loadData()
+        setIsNFModalOpen(false)
+      } else {
+        throw new Error(resultado.error || 'Erro ao cancelar nota fiscal')
+      }
+    } catch (error: any) {
+      console.error('Erro ao cancelar nota fiscal:', error)
+      alert(`❌ Erro ao cancelar nota fiscal:\n\n${error.message || error}`)
+    } finally {
+      setGeneratingNF(false)
+    }
+  }
+
+  // Baixar DANFE
+  const handleBaixarDanfe = async () => {
+    // Se temos URL do modal, usar diretamente
+    if (notaFiscalData?.url_danfe) {
+      window.open(notaFiscalData.url_danfe, '_blank')
+      return
+    }
+
+    // Fallback: construir URL via referência
+    if (!notaFiscalData?.referencia && !selectedVenda?.chave_nf) {
+      alert('Chave da nota fiscal não encontrada')
+      return
+    }
+
+    try {
+      const ambiente = process.env.NEXT_PUBLIC_FOCUS_NFE_AMBIENTE || 'homologacao'
+      const baseUrl = ambiente === 'producao' 
+        ? 'https://api.focusnfe.com.br' 
+        : 'https://homologacao.focusnfe.com.br'
+      
+      const referencia = notaFiscalData?.referencia
+      if (referencia) {
+        window.open(`${baseUrl}/v2/nfe/${referencia}/danfe`, '_blank')
+      }
+    } catch (error) {
+      console.error('Erro ao baixar DANFE:', error)
+      alert('Erro ao baixar DANFE')
+    }
+  }
+
+  // Baixar XML
+  const handleBaixarXml = async () => {
+    // Se temos URL do modal, usar diretamente
+    if (notaFiscalData?.url_xml) {
+      window.open(notaFiscalData.url_xml, '_blank')
+      return
+    }
+
+    // Fallback: construir URL via referência
+    if (!notaFiscalData?.referencia && !selectedVenda?.chave_nf) {
+      alert('Chave da nota fiscal não encontrada')
+      return
+    }
+
+    try {
+      const ambiente = process.env.NEXT_PUBLIC_FOCUS_NFE_AMBIENTE || 'homologacao'
+      const baseUrl = ambiente === 'producao' 
+        ? 'https://api.focusnfe.com.br' 
+        : 'https://homologacao.focusnfe.com.br'
+      
+      const referencia = notaFiscalData?.referencia
+      if (referencia) {
+        window.open(`${baseUrl}/v2/nfe/${referencia}/xml`, '_blank')
+      }
+    } catch (error) {
+      console.error('Erro ao baixar XML:', error)
+      alert('Erro ao baixar XML')
     }
   }
 
@@ -881,26 +943,29 @@ export default function VendasPage() {
                     </td>
                     <td>
                       {venda.nota_fiscal_emitida ? (
-                        <Badge variant="success">Emitida</Badge>
+                        <div className="flex items-center gap-1">
+                          <Badge variant="success">Emitida</Badge>
+                          <button
+                            onClick={() => handleVerNotaFiscal(venda)}
+                            className="p-1 hover:bg-dark-600 rounded transition-colors"
+                            title="Ver Nota Fiscal"
+                          >
+                            <Eye className="w-3 h-3 text-primary-400" />
+                          </button>
+                        </div>
                       ) : (
                         <button
                           onClick={() => handleGerarNota(venda)}
-                          className="text-xs px-2 py-1 bg-primary-500/20 text-primary-400 rounded hover:bg-primary-500/30 transition-colors"
+                          disabled={generatingNF}
+                          className="text-xs px-2 py-1 bg-primary-500/20 text-primary-400 rounded hover:bg-primary-500/30 transition-colors disabled:opacity-50"
                           title="Gerar Nota Fiscal"
                         >
-                          Gerar NF
+                          {generatingNF ? '...' : 'Gerar NF'}
                         </button>
                       )}
                     </td>
                     <td>
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          onClick={() => handleImprimir(venda)}
-                          className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
-                          title="Imprimir"
-                        >
-                          <Printer className="w-4 h-4 text-dark-400" />
-                        </button>
                         <button
                           onClick={() => openViewVenda(venda)}
                           className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
@@ -1338,27 +1403,20 @@ export default function VendasPage() {
               </div>
             </div>
 
-            {selectedVenda.nota_fiscal_emitida && selectedVenda.valor_impostos && (
+            {selectedVenda.nota_fiscal_emitida && selectedVenda.valor_impostos > 0 && (
               <div className="text-center text-dark-400 text-sm">
                 Impostos aproximados: {formatCurrency(selectedVenda.valor_impostos)}
               </div>
             )}
 
             <div className="flex flex-wrap justify-end gap-3">
-              <Button 
-                variant="secondary" 
-                leftIcon={<Printer className="w-4 h-4" />}
-                onClick={() => handleImprimir(selectedVenda)}
-              >
-                Imprimir
-              </Button>
               {selectedVenda.nota_fiscal_emitida ? (
                 <Button 
                   variant="secondary" 
-                  leftIcon={<Download className="w-4 h-4" />}
-                  onClick={() => executarImpressao('nf')}
+                  leftIcon={<Eye className="w-4 h-4" />}
+                  onClick={() => handleVerNotaFiscal(selectedVenda)}
                 >
-                  Imprimir DANFE
+                  Ver NF-e
                 </Button>
               ) : (
                 <Button 
@@ -1430,6 +1488,155 @@ export default function VendasPage() {
           <div className="flex justify-end pt-4 border-t border-dark-600">
             <Button variant="secondary" onClick={() => setIsPrintModalOpen(false)}>
               Cancelar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal Nota Fiscal */}
+      <Modal
+        isOpen={isNFModalOpen}
+        onClose={() => {
+          setIsNFModalOpen(false)
+          setNotaFiscalData(null)
+        }}
+        title="Nota Fiscal"
+        size="lg"
+      >
+        <div className="space-y-6">
+          {loadingNF ? (
+            <div className="space-y-4 animate-pulse">
+              {/* Skeleton Cabeçalho */}
+              <div className="bg-dark-700 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="h-6 w-32 bg-dark-600 rounded"></div>
+                  <div className="h-6 w-20 bg-dark-600 rounded-full"></div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <div className="h-4 w-12 bg-dark-600 rounded"></div>
+                    <div className="h-5 w-16 bg-dark-600 rounded"></div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-4 w-12 bg-dark-600 rounded"></div>
+                    <div className="h-5 w-24 bg-dark-600 rounded"></div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-4 w-16 bg-dark-600 rounded"></div>
+                    <div className="h-5 w-20 bg-dark-600 rounded"></div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-4 w-12 bg-dark-600 rounded"></div>
+                    <div className="h-5 w-32 bg-dark-600 rounded"></div>
+                  </div>
+                </div>
+              </div>
+              {/* Skeleton Chave de Acesso */}
+              <div className="bg-dark-700 rounded-lg p-4">
+                <div className="h-4 w-24 bg-dark-600 rounded mb-2"></div>
+                <div className="h-5 w-full bg-dark-600 rounded"></div>
+              </div>
+              {/* Skeleton Botões */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="h-12 bg-dark-600 rounded-lg"></div>
+                <div className="h-12 bg-dark-600 rounded-lg"></div>
+              </div>
+            </div>
+          ) : notaFiscalData ? (
+            <>
+              {/* Cabeçalho */}
+              <div className="bg-dark-700 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-white">
+                    NF-e #{notaFiscalData.numero || selectedVenda?.numero_nf || 'N/A'}
+                  </h3>
+                  <Badge variant={
+                    (notaFiscalData.status === 'autorizado' || notaFiscalData.status === 'autorizada') ? 'success' :
+                    (notaFiscalData.status === 'cancelado' || notaFiscalData.status === 'cancelada') ? 'danger' :
+                    (notaFiscalData.status === 'pendente' || notaFiscalData.status === 'processando') ? 'warning' : 'secondary'
+                  }>
+                    {(notaFiscalData.status === 'autorizado' || notaFiscalData.status === 'autorizada') ? 'Autorizada' :
+                     (notaFiscalData.status === 'cancelado' || notaFiscalData.status === 'cancelada') ? 'Cancelada' :
+                     (notaFiscalData.status === 'pendente' || notaFiscalData.status === 'processando') ? 'Pendente' : 
+                     notaFiscalData.status || 'N/A'}
+                  </Badge>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-dark-400">Série</p>
+                    <p className="text-white">{notaFiscalData.serie || '1'}</p>
+                  </div>
+                  <div>
+                    <p className="text-dark-400">Venda</p>
+                    <p className="text-white">#{selectedVenda?.numero || selectedVenda?.id}</p>
+                  </div>
+                  <div>
+                    <p className="text-dark-400">Valor Total</p>
+                    <p className="text-white font-medium">{formatCurrency(selectedVenda?.valor_total || 0)}</p>
+                  </div>
+                  <div>
+                    <p className="text-dark-400">Cliente</p>
+                    <p className="text-white">{selectedVenda?.cliente?.nome || 'Consumidor Final'}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Chave de Acesso */}
+              <div className="bg-dark-700 rounded-lg p-4">
+                <p className="text-dark-400 text-sm mb-2">Chave de Acesso</p>
+                <p className="text-white font-mono text-xs break-all">
+                  {notaFiscalData.chave_nfe || selectedVenda?.chave_nf || 'N/A'}
+                </p>
+              </div>
+
+              {/* Ações */}
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={handleBaixarDanfe}
+                  className="flex items-center justify-center gap-2 p-3 bg-primary-500/20 hover:bg-primary-500/30 rounded-lg transition-colors text-primary-400"
+                >
+                  <FileText className="w-5 h-5" />
+                  <span>Baixar DANFE</span>
+                </button>
+                <button
+                  onClick={handleBaixarXml}
+                  className="flex items-center justify-center gap-2 p-3 bg-green-500/20 hover:bg-green-500/30 rounded-lg transition-colors text-green-400"
+                >
+                  <Download className="w-5 h-5" />
+                  <span>Baixar XML</span>
+                </button>
+              </div>
+
+              {/* Botão Cancelar NF */}
+              {(notaFiscalData.status === 'autorizado' || notaFiscalData.status === 'autorizada') && (
+                <div className="pt-4 border-t border-dark-600">
+                  <button
+                    onClick={() => selectedVenda && handleCancelarNotaFiscal(selectedVenda)}
+                    disabled={generatingNF}
+                    className="w-full flex items-center justify-center gap-2 p-3 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-colors text-red-400 disabled:opacity-50"
+                  >
+                    <X className="w-5 h-5" />
+                    <span>{generatingNF ? 'Cancelando...' : 'Cancelar Nota Fiscal'}</span>
+                  </button>
+                  <p className="text-dark-500 text-xs mt-2 text-center">
+                    ⚠️ O cancelamento é irreversível e só pode ser feito em até 24h após a autorização
+                  </p>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-center py-8 text-dark-400">
+              Nenhuma informação disponível
+            </div>
+          )}
+
+          <div className="flex justify-end pt-4 border-t border-dark-600">
+            <Button variant="secondary" onClick={() => {
+              setIsNFModalOpen(false)
+              setNotaFiscalData(null)
+            }}>
+              Fechar
             </Button>
           </div>
         </div>

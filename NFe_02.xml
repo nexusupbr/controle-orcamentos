@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00"><NFe xmlns="http://www.portalfiscal.inf.br/nfe"><infNFe versao="4.00" Id="NFe51260241852934000139550010000000021341064148"><ide><cUF>51</cUF><cNF>34106414</cNF><natOp>VENDA</natOp><mod>55</mod><serie>1</serie><nNF>2</nNF><dhEmi>2026-02-05T06:54:39-04:00</dhEmi><tpNF>1</tpNF><idDest>1</idDest><cMunFG>5107909</cMunFG><tpImp>1</tpImp><tpEmis>1</tpEmis><cDV>8</cDV><tpAmb>2</tpAmb><finNFe>1</finNFe><indFinal>1</indFinal><indPres>1</indPres><indIntermed>0</indIntermed><procEmi>0</procEmi><verProc>0.1.0</verProc></ide><emit><CNPJ>41852934000139</CNPJ><xNome>IRRIGA CENTRO OESTE LTDA</xNome><xFant>IRRIGA CENTRO OESTE LTDA</xFant><enderEmit><xLgr>R ALCIDES FAGANELO</xLgr><nro>5051</nro><xBairro>JARDIM CARIBE</xBairro><cMun>5107909</cMun><xMun>SINOP</xMun><UF>MT</UF><CEP>78554264</CEP><cPais>1058</cPais><xPais>Brasil</xPais></enderEmit><IE>138722250</IE><CRT>1</CRT></emit><dest><CPF>32441677306</CPF><xNome>NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</xNome><enderDest><xLgr>Av Brasil</xLgr><nro>500</nro><xBairro>Centro</xBairro><cMun>5107909</cMun><xMun>Sinop</xMun><UF>MT</UF><CEP>78554264</CEP><cPais>1058</cPais><xPais>Brasil</xPais></enderDest><indIEDest>9</indIEDest></dest><det nItem="1"><prod><cProd>TUBO-PVC-50</cProd><cEAN>SEM GTIN</cEAN><xProd>TUBO PVC SOLDAVEL 50MM</xProd><NCM>39172100</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>10.0000</qCom><vUnCom>25.90</vUnCom><vProd>259.00</vProd><cEANTrib>SEM GTIN</cEANTrib><uTrib>UN</uTrib><qTrib>10.0000</qTrib><vUnTrib>25.90</vUnTrib><indTot>1</indTot></prod><imposto><ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS><PIS><PISNT><CST>07</CST></PISNT></PIS><COFINS><COFINSNT><CST>07</CST></COFINSNT></COFINS></imposto></det><total><ICMSTot><vBC>0</vBC><vICMS>0</vICMS><vICMSDeson>0</vICMSDeson><vFCP>0</vFCP><vBCST>0</vBCST><vST>0</vST><vFCPST>0</vFCPST><vFCPSTRet>0</vFCPSTRet><vProd>259.00</vProd><vFrete>0</vFrete><vSeg>0</vSeg><vDesc>0</vDesc><vII>0</vII><vIPI>0</vIPI><vIPIDevol>0</vIPIDevol><vPIS>0</vPIS><vCOFINS>0</vCOFINS><vOutro>0</vOutro><vNF>259.00</vNF></ICMSTot></total><transp><modFrete>9</modFrete></transp><pag><detPag><tPag>17</tPag><vPag>259.00</vPag><card><tpIntegra>2</tpIntegra></card></detPag></pag></infNFe><Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo><CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/><Reference URI="#NFe51260241852934000139550010000000021341064148"><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/><DigestValue>+7FO7IDJmV4X6H2HyColjaGFNdw=</DigestValue></Reference></SignedInfo><SignatureValue>Q7VJF9p4ggUbSWcFfZGxEHGwSwnGbz20cAtxGYuv4CfpelB+hDy+wR4+lk3KrNo28JnBVxkhocxA
+/3OYh1NK7o1P8dIW/S56Nx4Qgfg+IXTxFztur2yC+NCuQrASkxAf5T0nRF8RQf6/SHy8xL/wwdvC
+U5FBBQDN0gf5O79Bsafxo96OJDCKPnmX8Epq0o4Piuq8vyhMfinmIWfxvrpQvkZyY19F4x6Oo0Zt
+h83gFbgRVOtqVoPFyzRyGmeeN1UWIL0M6OiwHh1EUS5WNCGCU9D/NgBDC1cBGGpnBABFMU7OM1BN
+ffZbwiHCmRVqhHYk2d2UyBgJKbGb8i9lEtZbDg==</SignatureValue><KeyInfo><X509Data><X509Certificate>MIIH4TCCBcmgAwIBAgILAI9mLAaOle0k//YwDQYJKoZIhvcNAQELBQAwWzELMAkGA1UEBhMCQlIx
+FjAUBgNVBAsMDUFDIFN5bmd1bGFySUQxEzARBgNVBAoMCklDUC1CcmFzaWwxHzAdBgNVBAMMFkFD
+IFN5bmd1bGFySUQgTXVsdGlwbGEwHhcNMjUxMDEwMTkxODE1WhcNMjYxMDEwMTkxODE1WjCBzTEL
+MAkGA1UEBhMCQlIxEzARBgNVBAoMCklDUC1CcmFzaWwxIjAgBgNVBAsMGUNlcnRpZmljYWRvIERp
+Z2l0YWwgUEogQTExGTAXBgNVBAsMEFZpZGVvY29uZmVyZW5jaWExFzAVBgNVBAsMDjQxMzQ2MTQ0
+MDAwMTgxMR8wHQYDVQQLDBZBQyBTeW5ndWxhcklEIE11bHRpcGxhMTAwLgYDVQQDDCdJUlJJR0Eg
+Q0VOVFJPIE9FU1RFIExUREE6NDE4NTI5MzQwMDAxMzkwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAw
+ggEKAoIBAQC6iijw0ai0BpjZTGs2dq05HM9z5VqUPbVeq0aHvnDhsIj6TeH5HL32944e8a4Ic9Wx
+MXXc48hpkiDtKhdi/JN6rb+befw8S4sITTDJI8EhO2uuoT75OU+FlnTy66oNxpqigKzDX1b91D4f
+NfbOpGpheYbA9GwyyRyfH6p0esayLnMUKmerlw8IHXkfrO5hQxHt3fDOGg93Is591LU82CKqxPE5
+QqhiF9TMkS8ZsMkl+4qVCTue6/GHZAOeBoroIQNafYwCuVGB/95mqtSz3MZxiZkQM0Nat7jWGavp
+AGO1LB+aNG15TMSm9/ev/r0x3DcMl2B70MTBUzH/usB8Rv1jAgMBAAGjggMxMIIDLTAOBgNVHQ8B
+Af8EBAMCBeAwHQYDVR0lBBYwFAYIKwYBBQUHAwQGCCsGAQUFBwMCMAkGA1UdEwQCMAAwHwYDVR0j
+BBgwFoAUk+H/fh3l9eRN4TliiyFpleavchYwHQYDVR0OBBYEFKKxEF8Nc8yB4VMObMjVLKY00S3F
+MH8GCCsGAQUFBwEBBHMwcTBvBggrBgEFBQcwAoZjaHR0cDovL3N5bmd1bGFyaWQuY29tLmJyL3Jl
+cG9zaXRvcmlvL2FjLXN5bmd1bGFyaWQtbXVsdGlwbGEvY2VydGlmaWNhZG9zL2FjLXN5bmd1bGFy
+aWQtbXVsdGlwbGEucDdiMIGCBgNVHSAEezB5MHcGB2BMAQIBgQUwbDBqBggrBgEFBQcCARZeaHR0
+cDovL3N5bmd1bGFyaWQuY29tLmJyL3JlcG9zaXRvcmlvL2FjLXN5bmd1bGFyaWQtbXVsdGlwbGEv
+ZHBjL2RwYy1hYy1zeW5ndWxhcklELW11bHRpcGxhLnBkZjCBxQYDVR0RBIG9MIG6oCMGBWBMAQMC
+oBoEGEpVTElPIENFU0FSIFNFSUJUIExPUkVOT6AZBgVgTAEDA6AQBA40MTg1MjkzNDAwMDEzOaBC
+BgVgTAEDBKA5BDcyMjEwMTk4NTAxNjM1NzgwMTAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw
+MDAwMDAwMDAwoBcGBWBMAQMHoA4EDDAwMDAwMDAwMDAwMIEbSVJSSUdBQ0VOVFJPT0VTVEVAR01B
+SUwuQ09NMIHiBgNVHR8EgdowgdcwZKBioGCGXmh0dHA6Ly9zeW5ndWxhcmlkLmNvbS5ici9yZXBv
+c2l0b3Jpby9hYy1zeW5ndWxhcmlkLW11bHRpcGxhL2xjci9sY3ItYWMtc3luZ3VsYXJpZC1tdWx0
+aXBsYS5jcmwwb6BtoGuGaWh0dHA6Ly9pY3AtYnJhc2lsLnN5bmd1bGFyaWQuY29tLmJyL3JlcG9z
+aXRvcmlvL2FjLXN5bmd1bGFyaWQtbXVsdGlwbGEvbGNyL2xjci1hYy1zeW5ndWxhcmlkLW11bHRp
+cGxhLmNybDANBgkqhkiG9w0BAQsFAAOCAgEAHVOY8QUdkrmT/IoKZ3aPEzjo9+7lx4s2nuz8llYq
+PHYAJzzflE8T87aSk0Mm9f43a8qrsVM+oVBeIAtLNDlI1tRilkz7Ki2pIUPpn8KBKDbcj9PtY1VF
+7lAOH2CMdg3qRurJDecuAbaMDe4a2pTkbMM82VSkNiM7vbcQzPPWuWdykj6kqRJgS3DPQ6wRB1pg
+I0F//SShj/eBW7gctqEyno3ZVccrwGfnh47kL4XOz6p93UlWGnUvpurlCweK7MgKJg3JlYvFf5Rn
+l3GDe/+tiYF8n95R2g+sEhmnYr58B3oBHRZjuEFgwgF+jXcYjOqnDfVQ/AxJ2uCvvKlYD8uq4naZ
+eU0F4YdFi92u5ujWPar1i0XpMMlM5NhlWpnpEyw810sTLUcAJI43HfjfCAvRqfjkpi8iyGURTPNG
+FEwWeCyXpxwZUk/x3ZgOCF97Wq2/jsjd2ly8D17YM8TsB7wvuhdK8Oep+0AUe8brIWx8LGhhRLNN
+y/oG5TuhkAlIPOKqBKlN29DE0jZKHjyGHEr5vPMHuXAXEniSQ3FtzXioU/D4+Fi3Ow+pDuMRaSs+
+7qfp1atpn3/1GnLZ2/lIGePqLl2SJM8F97ypyLUth5wqVyPHrLMXZ9wMmuSdH0JtjfhZsrMguYkF
+eXWx90AuQCXd0HlrAdIeH1MRuX8ZitrqqQc=</X509Certificate></X509Data></KeyInfo></Signature></NFe><protNFe versao="4.00"><infProt><tpAmb>2</tpAmb><verAplic>MT_A2_SRV240225-4.00</verAplic><chNFe>51260241852934000139550010000000021341064148</chNFe><dhRecbto>2026-02-05T06:56:38-04:00</dhRecbto><nProt>151260000709632</nProt><digVal>+7FO7IDJmV4X6H2HyColjaGFNdw=</digVal><cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe></nfeProc>
