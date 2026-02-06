@@ -580,24 +580,25 @@ export class FocusNFeClient {
   async registrarEvento(
     notaId: number,
     tipoEvento: string,
-    descricao?: string,
+    descricao?: string | null,
     payloadEnvio?: unknown,
     payloadRetorno?: unknown,
-    statusHttp?: number,
-    duracaoMs?: number,
-    erro?: string,
-    usuarioId?: string
+    statusHttp?: number | null,
+    duracaoMs?: number | null,
+    erro?: string | null,
+    usuarioId?: string | number | null
   ): Promise<void> {
-    await this.supabase.from('notas_fiscais_eventos').insert({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (this.supabase as any).from('notas_fiscais_eventos').insert({
       nota_fiscal_id: notaId,
       tipo_evento: tipoEvento,
-      descricao,
-      payload_envio: payloadEnvio,
-      payload_retorno: payloadRetorno,
-      status_http: statusHttp,
-      duracao_ms: duracaoMs,
-      erro_mensagem: erro,
-      usuario_id: usuarioId
+      descricao: descricao || null,
+      payload_envio: payloadEnvio || null,
+      payload_retorno: payloadRetorno || null,
+      status_http: statusHttp || null,
+      duracao_ms: duracaoMs || null,
+      erro_mensagem: erro || null,
+      usuario_id: usuarioId ? String(usuarioId) : null
     })
   }
 
@@ -610,7 +611,8 @@ export class FocusNFeClient {
     venda_id: number
     tentativas_autorizacao: number
   }>> {
-    const { data, error } = await this.supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (this.supabase as any)
       .from('notas_fiscais')
       .select('id, referencia, venda_id, tentativas_autorizacao')
       .in('status', ['pendente', 'processando', 'processando_autorizacao'])
@@ -666,7 +668,8 @@ export class FocusNFeClient {
       updateData.proxima_consulta_em = new Date(Date.now() + delayMs).toISOString()
     }
 
-    const { error } = await this.supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (this.supabase as any)
       .from('notas_fiscais')
       .update(updateData)
       .eq('id', notaId)
@@ -682,7 +685,8 @@ export class FocusNFeClient {
     numero: string,
     chave: string
   ): Promise<void> {
-    const { error } = await this.supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (this.supabase as any)
       .from('vendas')
       .update({
         nota_fiscal_emitida: true,
@@ -701,7 +705,8 @@ export class FocusNFeClient {
     existe: boolean
     nota?: { id: number; referencia: string; status: string }
   }> {
-    const { data, error } = await this.supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (this.supabase as any)
       .from('notas_fiscais')
       .select('id, referencia, status')
       .eq('venda_id', vendaId)
@@ -736,7 +741,8 @@ export class FocusNFeClient {
     usuario_id?: string
     ip_origem?: string
   }): Promise<{ id: number }> {
-    const { data, error } = await this.supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (this.supabase as any)
       .from('notas_fiscais')
       .insert({
         ...dados,

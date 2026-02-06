@@ -334,7 +334,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function getMensagemStatus(status: string): string {
+function getMensagemStatus(status?: string): string {
   switch (status) {
     case 'autorizado':
       return 'NF-e autorizada com sucesso'
@@ -347,6 +347,6 @@ function getMensagemStatus(status: string): string {
     case 'cancelado':
       return 'NF-e cancelada'
     default:
-      return `Status: ${status}`
+      return `Status: ${status || 'desconhecido'}`
   }
 }

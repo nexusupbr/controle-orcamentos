@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
       resultado.response,
       resultado.status,
       resultado.durationMs,
-      resultado.response.status !== 'autorizado' ? resultado.response.mensagem_sefaz : null,
+      resultado.response.status !== 'autorizado' ? resultado.response.mensagem_sefaz : undefined,
       user.id
     )
 

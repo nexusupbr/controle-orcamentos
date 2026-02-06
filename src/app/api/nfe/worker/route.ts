@@ -18,7 +18,7 @@ interface ProcessamentoResultado {
   nota_id: number
   referencia: string
   status_anterior: string
-  status_novo: string
+  status_novo: string | undefined
   sucesso: boolean
   erro?: string
   duracao_ms: number
