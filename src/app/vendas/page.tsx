@@ -488,10 +488,18 @@ export default function VendasPage() {
         if (nota && !error) {
           // Montar URLs completas para DANFE e XML
           const baseUrl = 'https://homologacao.focusnfe.com.br'
+          // A tabela armazena apenas o caminho relativo
+          const urlDanfe = nota.url_danfe 
+            ? (nota.url_danfe.startsWith('http') ? nota.url_danfe : `${baseUrl}${nota.url_danfe}`)
+            : (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/danfe` : null)
+          const urlXml = nota.url_xml
+            ? (nota.url_xml.startsWith('http') ? nota.url_xml : `${baseUrl}${nota.url_xml}`)
+            : (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/xml` : null)
+          
           setNotaFiscalData({
             ...nota,
-            url_danfe: nota.url_danfe || (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/danfe` : null),
-            url_xml: nota.url_xml || (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/xml` : null)
+            url_danfe: urlDanfe,
+            url_xml: urlXml
           })
         } else {
           // Usar dados básicos da venda
@@ -1646,7 +1654,7 @@ export default function VendasPage() {
               <div className="bg-dark-700 rounded-lg p-4">
                 <p className="text-dark-400 text-sm mb-2">Chave de Acesso</p>
                 <p className="text-white font-mono text-xs break-all">
-                  {notaFiscalData.chave_nfe || selectedVenda?.chave_nf || 'N/A'}
+                  {notaFiscalData.chave_acesso || notaFiscalData.chave_nfe || selectedVenda?.chave_nf || 'N/A'}
                 </p>
               </div>
 

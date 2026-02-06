@@ -267,10 +267,10 @@ serve(async (req) => {
 
     // Montar URL completa do DANFE/XML
     const urlDanfe = focusResult.caminho_danfe 
-      ? `${baseUrl}${focusResult.caminho_danfe}?token=${FOCUS_NFE_TOKEN}`
+      ? `${baseUrl}${focusResult.caminho_danfe}`
       : null
     const urlXml = focusResult.caminho_xml_nota_fiscal
-      ? `${baseUrl}${focusResult.caminho_xml_nota_fiscal}?token=${FOCUS_NFE_TOKEN}`
+      ? `${baseUrl}${focusResult.caminho_xml_nota_fiscal}`
       : null
 
     // Salvar no banco
@@ -282,19 +282,21 @@ serve(async (req) => {
         tipo: 'nfe',
         numero: focusResult.numero || null,
         serie: focusResult.serie || '1',
-        chave_nfe: focusResult.chave_nfe || null,
+        chave_acesso: focusResult.chave_nfe || null,
         status: statusBanco,
         status_sefaz: focusResult.status_sefaz || null,
         mensagem_sefaz: focusResult.mensagem_sefaz || null,
-        nome_destinatario: cliente?.nome || cliente?.razao_social || 'Consumidor Final',
-        cpf_cnpj_destinatario: cliente?.cpf || cliente?.cnpj || null,
+        destinatario_nome: cliente?.nome || cliente?.razao_social || 'Consumidor Final',
+        destinatario_documento: cliente?.cpf || cliente?.cnpj || null,
         valor_total: valorTotal,
         valor_produtos: valorProdutos,
         valor_desconto: valorDesconto,
         valor_frete: valorFrete,
         url_xml: urlXml,
         url_danfe: urlDanfe,
-        ambiente: FOCUS_NFE_AMBIENTE
+        ambiente: FOCUS_NFE_AMBIENTE,
+        dados_envio: payload,
+        dados_retorno: focusResult
       })
       .select()
       .single()
