@@ -474,24 +474,52 @@ export default function VendasPage() {
     setIsNFModalOpen(true)
 
     try {
-      const userId = usuario?.id || 1
-      const response = await fetch(`/api/nfe/consultar?venda_id=${venda.id}`, {
-        headers: {
-          'X-User-Id': String(userId)
+      // No GitHub Pages, buscar diretamente do Supabase
+      if (isGitHubPages) {
+        const { data: nota, error } = await supabase
+          .from('notas_fiscais')
+          .select('*')
+          .eq('venda_id', venda.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single()
+        
+        if (nota && !error) {
+          // Montar URLs completas para DANFE e XML
+          const baseUrl = 'https://homologacao.focusnfe.com.br'
+          setNotaFiscalData({
+            ...nota,
+            url_danfe: nota.url_danfe || (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/danfe` : null),
+            url_xml: nota.url_xml || (nota.referencia ? `${baseUrl}/v2/nfe/${nota.referencia}/xml` : null)
+          })
+        } else {
+          // Usar dados básicos da venda
+          setNotaFiscalData({
+            numero: venda.numero_nf,
+            chave_nfe: venda.chave_nf,
+            status: 'autorizada'
+          })
         }
-      })
-
-      const resultado = await response.json()
-      
-      if (resultado.success) {
-        setNotaFiscalData(resultado.data)
       } else {
-        // Usar dados básicos da venda se não conseguir consultar
-        setNotaFiscalData({
-          numero: venda.numero_nf,
-          chave_nfe: venda.chave_nf,
-          status: 'autorizado'
+        // Em servidor local/Vercel, usar API Route
+        const userId = usuario?.id || 1
+        const response = await fetch(`/api/nfe/consultar?venda_id=${venda.id}`, {
+          headers: {
+            'X-User-Id': String(userId)
+          }
         })
+
+        const resultado = await response.json()
+        
+        if (resultado.success) {
+          setNotaFiscalData(resultado.data)
+        } else {
+          setNotaFiscalData({
+            numero: venda.numero_nf,
+            chave_nfe: venda.chave_nf,
+            status: 'autorizada'
+          })
+        }
       }
     } catch (error) {
       console.error('Erro ao buscar nota fiscal:', error)
@@ -499,7 +527,7 @@ export default function VendasPage() {
       setNotaFiscalData({
         numero: venda.numero_nf,
         chave_nfe: venda.chave_nf,
-        status: 'autorizado'
+        status: 'autorizada'
       })
     } finally {
       setLoadingNF(false)
@@ -534,12 +562,24 @@ export default function VendasPage() {
     setGeneratingNF(true)
     try {
       const userId = usuario?.id || 1
-      const response = await fetch('/api/nfe/cancelar', {
+      
+      // Escolher endpoint: Edge Function (GitHub Pages) ou API Route (Vercel/local)
+      const endpoint = isGitHubPages
+        ? `${SUPABASE_URL}/functions/v1/nfe-cancelar`
+        : '/api/nfe/cancelar'
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-User-Id': String(userId)
+      }
+      
+      if (isGitHubPages) {
+        headers['Authorization'] = `Bearer ${SUPABASE_ANON_KEY}`
+      }
+
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Id': String(userId)
-        },
+        headers,
         body: JSON.stringify({
           venda_id: venda.id,
           justificativa
