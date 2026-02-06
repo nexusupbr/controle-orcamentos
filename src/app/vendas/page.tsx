@@ -476,13 +476,14 @@ export default function VendasPage() {
     try {
       // No GitHub Pages, buscar diretamente do Supabase
       if (isGitHubPages) {
-        const { data: nota, error } = await supabase
+        const { data: notas, error } = await supabase
           .from('notas_fiscais')
           .select('*')
           .eq('venda_id', venda.id)
           .order('created_at', { ascending: false })
           .limit(1)
-          .single()
+        
+        const nota = notas?.[0]
         
         if (nota && !error) {
           // Montar URLs completas para DANFE e XML
