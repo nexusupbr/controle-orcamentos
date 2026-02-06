@@ -350,6 +350,7 @@ export default function VendasPage() {
   
   // URL base para Supabase Edge Functions
   const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://yhiiupamxdjmnrktkjku.supabase.co'
+  const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InloaWl1cGFteGRqbW5ya3Rramt1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg0ODg2NzUsImV4cCI6MjA4NDA2NDY3NX0._QjYtYAlypJdursHe0-rPz14QOT4NNP2EklqcJ6TpkI'
 
   // Gerar Nota Fiscal via API Route ou Edge Function (GitHub Pages)
   const handleGerarNota = async (venda: Venda) => {
@@ -380,12 +381,20 @@ export default function VendasPage() {
         ? `${SUPABASE_URL}/functions/v1/nfe-emitir`
         : '/api/nfe/emitir'
 
+      // Headers para Edge Function precisam de Authorization
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-User-Id': String(userId)
+      }
+      
+      // Adicionar Authorization para Supabase Edge Functions
+      if (isGitHubPages) {
+        headers['Authorization'] = `Bearer ${SUPABASE_ANON_KEY}`
+      }
+
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Id': String(userId)
-        },
+        headers,
         body: JSON.stringify({ venda_id: venda.id })
       })
 
