@@ -345,7 +345,13 @@ export default function VendasPage() {
   // Obter usuário do contexto de autenticação
   const { usuario } = useAuth()
 
-  // Gerar Nota Fiscal via API Route (server-side)
+  // Detectar se está no GitHub Pages (static export sem API Routes)
+  const isGitHubPages = typeof window !== 'undefined' && window.location.hostname.includes('github.io')
+  
+  // URL base para Supabase Edge Functions
+  const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://yhiiupamxdjmnrktkjku.supabase.co'
+
+  // Gerar Nota Fiscal via API Route ou Edge Function (GitHub Pages)
   const handleGerarNota = async (venda: Venda) => {
     if (venda.nota_fiscal_emitida) {
       alert('Esta venda já possui nota fiscal emitida!')
@@ -367,10 +373,14 @@ export default function VendasPage() {
 
     setGeneratingNF(true)
     try {
-      console.log('Enviando NFe para API Route:', { venda_id: venda.id, ambiente, usuario_id: userId })
+      console.log('Enviando NFe:', { venda_id: venda.id, ambiente, usuario_id: userId, isGitHubPages })
 
-      // Chamar API Route server-side (evita CORS)
-      const response = await fetch('/api/nfe/emitir', {
+      // Escolher endpoint: Edge Function (GitHub Pages) ou API Route (Vercel/local)
+      const endpoint = isGitHubPages
+        ? `${SUPABASE_URL}/functions/v1/nfe-emitir`
+        : '/api/nfe/emitir'
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
