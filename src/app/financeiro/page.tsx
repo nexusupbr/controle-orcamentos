@@ -174,14 +174,16 @@ export default function FinanceiroPage() {
   const filteredPagar = contasPagar.filter(c => {
     const matchSearch = c.descricao?.toLowerCase().includes(searchTerm.toLowerCase())
     const matchStatus = filterStatus === 'todos' || c.status === filterStatus
-    return matchSearch && matchStatus
+    const matchConta = !filterContaBancaria || c.conta_bancaria_id === filterContaBancaria
+    return matchSearch && matchStatus && matchConta
   })
 
   // Filtrar contas a receber
   const filteredReceber = contasReceber.filter(c => {
     const matchSearch = c.descricao?.toLowerCase().includes(searchTerm.toLowerCase())
     const matchStatus = filterStatus === 'todos' || c.status === filterStatus
-    return matchSearch && matchStatus
+    const matchConta = !filterContaBancaria || c.conta_bancaria_id === filterContaBancaria
+    return matchSearch && matchStatus && matchConta
   })
 
   // Filtrar lançamentos
@@ -939,7 +941,7 @@ export default function FinanceiroPage() {
       {/* Filtros */}
       {(activeTab === 'pagar' || activeTab === 'receber' || activeTab === 'extrato') && (
         <div className="glass-card p-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="relative md:col-span-2">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" />
               <input
@@ -950,6 +952,18 @@ export default function FinanceiroPage() {
                 className="input pl-12 w-full"
               />
             </div>
+            
+            {/* Filtro de Conta Bancária - aparece em todas as abas */}
+            <select
+              value={filterContaBancaria || ''}
+              onChange={(e) => setFilterContaBancaria(e.target.value ? Number(e.target.value) : null)}
+              className="input"
+            >
+              <option value="">Todas as contas</option>
+              {contasBancarias.map(conta => (
+                <option key={conta.id} value={conta.id}>{conta.nome}</option>
+              ))}
+            </select>
             
             {(activeTab === 'pagar' || activeTab === 'receber') && (
               <>
@@ -976,34 +990,21 @@ export default function FinanceiroPage() {
             )}
             
             {activeTab === 'extrato' && (
-              <>
-                <select
-                  value={filterContaBancaria || ''}
-                  onChange={(e) => setFilterContaBancaria(e.target.value ? Number(e.target.value) : null)}
-                  className="input"
-                >
-                  <option value="">Todas as contas</option>
-                  {contasBancarias.map(conta => (
-                    <option key={conta.id} value={conta.id}>{conta.nome}</option>
-                  ))}
-                </select>
-                
-                <div className="relative">
-                  <input
-                    type="file"
-                    accept=".ofx"
-                    onChange={handleOFXUpload}
-                    className="hidden"
-                    id="ofx-upload"
-                  />
-                  <label htmlFor="ofx-upload" className="cursor-pointer">
-                    <span className="btn btn-secondary flex items-center gap-2">
-                      <Upload className="w-4 h-4" />
-                      Importar OFX
-                    </span>
-                  </label>
-                </div>
-              </>
+              <div className="relative md:col-span-2">
+                <input
+                  type="file"
+                  accept=".ofx"
+                  onChange={handleOFXUpload}
+                  className="hidden"
+                  id="ofx-upload"
+                />
+                <label htmlFor="ofx-upload" className="cursor-pointer">
+                  <span className="btn btn-secondary flex items-center gap-2 w-full justify-center">
+                    <Upload className="w-4 h-4" />
+                    Importar OFX
+                  </span>
+                </label>
+              </div>
             )}
           </div>
         </div>
