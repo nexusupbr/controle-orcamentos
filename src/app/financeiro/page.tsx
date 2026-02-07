@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { 
   Plus, Edit2, Trash2, Search, DollarSign, TrendingUp, TrendingDown,
   Calendar, FileText, Upload, Download, CheckCircle, Clock, AlertTriangle,
-  CreditCard, Wallet, Building2, RefreshCw, Filter, AlertCircle
+  CreditCard, Wallet, Building2, RefreshCw, Filter, AlertCircle, Repeat
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -16,7 +16,7 @@ import {
   ContaPagar, ContaReceber, ContaBancaria, CategoriaFinanceira, LancamentoFinanceiro,
   fetchContasPagar, createContaPagar, updateContaPagar, deleteContaPagar,
   fetchContasReceber, createContaReceber, updateContaReceber, deleteContaReceber,
-  fetchContasBancarias, createContaBancaria, fetchCategoriasFinanceiras, createCategoriaFinanceira,
+  fetchContasBancarias, createContaBancaria, updateContaBancaria, fetchCategoriasFinanceiras, createCategoriaFinanceira,
   fetchLancamentosFinanceiros, createLancamentoFinanceiro,
   fetchFornecedores, fetchClientes, checkOFXDuplicado,
   checkOFXDuplicadoAvancado, ResultadoImportacaoOFX
@@ -77,7 +77,11 @@ export default function FinanceiroPage() {
     numero_documento: '',
     parcela_atual: 1,
     total_parcelas: 1,
-    observacoes: ''
+    observacoes: '',
+    // Campos de recorrência
+    recorrente: false,
+    meses_recorrentes: 1,
+    dia_vencimento: 1
   })
   
   const [formReceber, setFormReceber] = useState({
@@ -92,8 +96,15 @@ export default function FinanceiroPage() {
     numero_documento: '',
     parcela_atual: 1,
     total_parcelas: 1,
-    observacoes: ''
+    observacoes: '',
+    // Campos de recorrência
+    recorrente: false,
+    meses_recorrentes: 1,
+    dia_vencimento: 1
   })
+  
+  // Estado para edição de conta bancária
+  const [editingContaBancaria, setEditingContaBancaria] = useState<ContaBancaria | null>(null)
   
   const [formContaBancaria, setFormContaBancaria] = useState({
     nome: '',
@@ -196,7 +207,10 @@ export default function FinanceiroPage() {
         numero_documento: conta.numero_documento || '',
         parcela_atual: conta.parcela_atual || 1,
         total_parcelas: conta.total_parcelas || 1,
-        observacoes: conta.observacoes || ''
+        observacoes: conta.observacoes || '',
+        recorrente: false,
+        meses_recorrentes: 1,
+        dia_vencimento: new Date(conta.data_vencimento).getDate() || 1
       })
     } else {
       setEditingPagar(null)
@@ -212,7 +226,10 @@ export default function FinanceiroPage() {
         numero_documento: '',
         parcela_atual: 1,
         total_parcelas: 1,
-        observacoes: ''
+        observacoes: '',
+        recorrente: false,
+        meses_recorrentes: 1,
+        dia_vencimento: 1
       })
     }
     setIsPagarModalOpen(true)
@@ -222,29 +239,63 @@ export default function FinanceiroPage() {
     e.preventDefault()
     setSaving(true)
     try {
-      const statusValue: 'pendente' | 'pago' | 'vencido' = formPagar.data_pagamento ? 'pago' : 
-                new Date(formPagar.data_vencimento) < new Date() ? 'vencido' : 'pendente'
-      
-      const data = {
-        fornecedor_id: formPagar.fornecedor_id,
-        descricao: formPagar.descricao,
-        valor: formPagar.valor,
-        data_vencimento: formPagar.data_vencimento,
-        data_pagamento: formPagar.data_pagamento || null,
-        categoria_id: formPagar.categoria_id,
-        conta_bancaria_id: formPagar.conta_bancaria_id,
-        forma_pagamento: formPagar.forma_pagamento,
-        numero_documento: formPagar.numero_documento,
-        parcela_atual: formPagar.parcela_atual,
-        total_parcelas: formPagar.total_parcelas,
-        observacoes: formPagar.observacoes,
-        status: statusValue
-      }
-      
-      if (editingPagar) {
-        await updateContaPagar(editingPagar.id, data)
+      // Se for recorrente, criar múltiplas contas
+      if (!editingPagar && formPagar.recorrente && formPagar.meses_recorrentes > 1) {
+        const dataBase = new Date(formPagar.data_vencimento)
+        
+        for (let i = 0; i < formPagar.meses_recorrentes; i++) {
+          const novaData = new Date(dataBase)
+          novaData.setMonth(novaData.getMonth() + i)
+          // Ajustar dia do vencimento
+          novaData.setDate(Math.min(formPagar.dia_vencimento, new Date(novaData.getFullYear(), novaData.getMonth() + 1, 0).getDate()))
+          
+          const dataVencimentoStr = novaData.toISOString().split('T')[0]
+          const statusValue: 'pendente' | 'pago' | 'vencido' = novaData < new Date() ? 'vencido' : 'pendente'
+          
+          const data = {
+            fornecedor_id: formPagar.fornecedor_id,
+            descricao: formPagar.descricao,
+            valor: formPagar.valor,
+            data_vencimento: dataVencimentoStr,
+            data_pagamento: null,
+            categoria_id: formPagar.categoria_id,
+            conta_bancaria_id: formPagar.conta_bancaria_id,
+            forma_pagamento: formPagar.forma_pagamento,
+            numero_documento: formPagar.numero_documento,
+            parcela_atual: i + 1,
+            total_parcelas: formPagar.meses_recorrentes,
+            observacoes: formPagar.observacoes ? `${formPagar.observacoes} (Recorrente ${i + 1}/${formPagar.meses_recorrentes})` : `Recorrente ${i + 1}/${formPagar.meses_recorrentes}`,
+            status: statusValue
+          }
+          
+          await createContaPagar(data)
+        }
       } else {
-        await createContaPagar(data)
+        // Conta única (ou edição)
+        const statusValue: 'pendente' | 'pago' | 'vencido' = formPagar.data_pagamento ? 'pago' : 
+                  new Date(formPagar.data_vencimento) < new Date() ? 'vencido' : 'pendente'
+        
+        const data = {
+          fornecedor_id: formPagar.fornecedor_id,
+          descricao: formPagar.descricao,
+          valor: formPagar.valor,
+          data_vencimento: formPagar.data_vencimento,
+          data_pagamento: formPagar.data_pagamento || null,
+          categoria_id: formPagar.categoria_id,
+          conta_bancaria_id: formPagar.conta_bancaria_id,
+          forma_pagamento: formPagar.forma_pagamento,
+          numero_documento: formPagar.numero_documento,
+          parcela_atual: formPagar.parcela_atual,
+          total_parcelas: formPagar.total_parcelas,
+          observacoes: formPagar.observacoes,
+          status: statusValue
+        }
+        
+        if (editingPagar) {
+          await updateContaPagar(editingPagar.id, data)
+        } else {
+          await createContaPagar(data)
+        }
       }
       
       await loadData()
@@ -311,7 +362,10 @@ export default function FinanceiroPage() {
         numero_documento: conta.numero_documento || '',
         parcela_atual: conta.parcela_atual || 1,
         total_parcelas: conta.total_parcelas || 1,
-        observacoes: conta.observacoes || ''
+        observacoes: conta.observacoes || '',
+        recorrente: false,
+        meses_recorrentes: 1,
+        dia_vencimento: new Date(conta.data_vencimento).getDate() || 1
       })
     } else {
       setEditingReceber(null)
@@ -327,7 +381,10 @@ export default function FinanceiroPage() {
         numero_documento: '',
         parcela_atual: 1,
         total_parcelas: 1,
-        observacoes: ''
+        observacoes: '',
+        recorrente: false,
+        meses_recorrentes: 1,
+        dia_vencimento: 1
       })
     }
     setIsReceberModalOpen(true)
@@ -337,29 +394,63 @@ export default function FinanceiroPage() {
     e.preventDefault()
     setSaving(true)
     try {
-      const statusValue: 'pendente' | 'recebido' | 'vencido' = formReceber.data_recebimento ? 'recebido' : 
-                new Date(formReceber.data_vencimento) < new Date() ? 'vencido' : 'pendente'
-      
-      const data = {
-        cliente_id: formReceber.cliente_id,
-        descricao: formReceber.descricao,
-        valor: formReceber.valor,
-        data_vencimento: formReceber.data_vencimento,
-        data_recebimento: formReceber.data_recebimento || null,
-        categoria_id: formReceber.categoria_id,
-        conta_bancaria_id: formReceber.conta_bancaria_id,
-        forma_pagamento: formReceber.forma_pagamento,
-        numero_documento: formReceber.numero_documento,
-        parcela_atual: formReceber.parcela_atual,
-        total_parcelas: formReceber.total_parcelas,
-        observacoes: formReceber.observacoes,
-        status: statusValue
-      }
-      
-      if (editingReceber) {
-        await updateContaReceber(editingReceber.id, data)
+      // Se for recorrente, criar múltiplas contas
+      if (!editingReceber && formReceber.recorrente && formReceber.meses_recorrentes > 1) {
+        const dataBase = new Date(formReceber.data_vencimento)
+        
+        for (let i = 0; i < formReceber.meses_recorrentes; i++) {
+          const novaData = new Date(dataBase)
+          novaData.setMonth(novaData.getMonth() + i)
+          // Ajustar dia do vencimento
+          novaData.setDate(Math.min(formReceber.dia_vencimento, new Date(novaData.getFullYear(), novaData.getMonth() + 1, 0).getDate()))
+          
+          const dataVencimentoStr = novaData.toISOString().split('T')[0]
+          const statusValue: 'pendente' | 'recebido' | 'vencido' = novaData < new Date() ? 'vencido' : 'pendente'
+          
+          const data = {
+            cliente_id: formReceber.cliente_id,
+            descricao: formReceber.descricao,
+            valor: formReceber.valor,
+            data_vencimento: dataVencimentoStr,
+            data_recebimento: null,
+            categoria_id: formReceber.categoria_id,
+            conta_bancaria_id: formReceber.conta_bancaria_id,
+            forma_pagamento: formReceber.forma_pagamento,
+            numero_documento: formReceber.numero_documento,
+            parcela_atual: i + 1,
+            total_parcelas: formReceber.meses_recorrentes,
+            observacoes: formReceber.observacoes ? `${formReceber.observacoes} (Recorrente ${i + 1}/${formReceber.meses_recorrentes})` : `Recorrente ${i + 1}/${formReceber.meses_recorrentes}`,
+            status: statusValue
+          }
+          
+          await createContaReceber(data)
+        }
       } else {
-        await createContaReceber(data)
+        // Conta única (ou edição)
+        const statusValue: 'pendente' | 'recebido' | 'vencido' = formReceber.data_recebimento ? 'recebido' : 
+                  new Date(formReceber.data_vencimento) < new Date() ? 'vencido' : 'pendente'
+        
+        const data = {
+          cliente_id: formReceber.cliente_id,
+          descricao: formReceber.descricao,
+          valor: formReceber.valor,
+          data_vencimento: formReceber.data_vencimento,
+          data_recebimento: formReceber.data_recebimento || null,
+          categoria_id: formReceber.categoria_id,
+          conta_bancaria_id: formReceber.conta_bancaria_id,
+          forma_pagamento: formReceber.forma_pagamento,
+          numero_documento: formReceber.numero_documento,
+          parcela_atual: formReceber.parcela_atual,
+          total_parcelas: formReceber.total_parcelas,
+          observacoes: formReceber.observacoes,
+          status: statusValue
+        }
+        
+        if (editingReceber) {
+          await updateContaReceber(editingReceber.id, data)
+        } else {
+          await createContaReceber(data)
+        }
       }
       
       await loadData()
@@ -411,23 +502,53 @@ export default function FinanceiroPage() {
   }
 
   // Handler Conta Bancária
+  const openContaBancariaModal = (conta?: ContaBancaria) => {
+    if (conta) {
+      setEditingContaBancaria(conta)
+      setFormContaBancaria({
+        nome: conta.nome,
+        banco: conta.banco || '',
+        agencia: conta.agencia || '',
+        conta: conta.conta || '',
+        tipo: conta.tipo,
+        saldo_inicial: conta.saldo_inicial
+      })
+    } else {
+      setEditingContaBancaria(null)
+      setFormContaBancaria({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: 0 })
+    }
+    setIsContaBancariaModalOpen(true)
+  }
+  
   const handleSaveContaBancaria = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     try {
       const tipoValue: 'corrente' | 'poupanca' | 'caixa' = formContaBancaria.tipo as 'corrente' | 'poupanca' | 'caixa'
-      await createContaBancaria({
-        nome: formContaBancaria.nome,
-        banco: formContaBancaria.banco,
-        agencia: formContaBancaria.agencia,
-        conta: formContaBancaria.conta,
-        tipo: tipoValue,
-        saldo_inicial: formContaBancaria.saldo_inicial,
-        saldo_atual: formContaBancaria.saldo_inicial,
-        ativo: true
-      })
+      
+      if (editingContaBancaria) {
+        await updateContaBancaria(editingContaBancaria.id, {
+          nome: formContaBancaria.nome,
+          banco: formContaBancaria.banco,
+          agencia: formContaBancaria.agencia,
+          conta: formContaBancaria.conta,
+          tipo: tipoValue
+        })
+      } else {
+        await createContaBancaria({
+          nome: formContaBancaria.nome,
+          banco: formContaBancaria.banco,
+          agencia: formContaBancaria.agencia,
+          conta: formContaBancaria.conta,
+          tipo: tipoValue,
+          saldo_inicial: formContaBancaria.saldo_inicial,
+          saldo_atual: formContaBancaria.saldo_inicial,
+          ativo: true
+        })
+      }
       await loadData()
       setIsContaBancariaModalOpen(false)
+      setEditingContaBancaria(null)
       setFormContaBancaria({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: 0 })
     } catch (err) {
       console.error('Erro ao salvar:', err)
@@ -732,7 +853,7 @@ export default function FinanceiroPage() {
           </Button>
           <Button
             variant="secondary"
-            onClick={() => setIsContaBancariaModalOpen(true)}
+            onClick={() => openContaBancariaModal()}
             leftIcon={<Building2 className="w-4 h-4" />}
           >
             Conta Bancária
@@ -831,18 +952,27 @@ export default function FinanceiroPage() {
             </div>
             
             {(activeTab === 'pagar' || activeTab === 'receber') && (
-              <select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-                className="input"
-              >
-                <option value="todos">Todos os status</option>
-                <option value="pendente">Pendente</option>
-                <option value="vencido">Vencido</option>
-                <option value={activeTab === 'pagar' ? 'pago' : 'recebido'}>
-                  {activeTab === 'pagar' ? 'Pago' : 'Recebido'}
-                </option>
-              </select>
+              <>
+                <select
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  className="input"
+                >
+                  <option value="todos">Todos os status</option>
+                  <option value="pendente">Pendente</option>
+                  <option value="vencido">Vencido</option>
+                  <option value={activeTab === 'pagar' ? 'pago' : 'recebido'}>
+                    {activeTab === 'pagar' ? 'Pago' : 'Recebido'}
+                  </option>
+                </select>
+                
+                <Button 
+                  onClick={() => activeTab === 'pagar' ? openPagarModal() : openReceberModal()}
+                  leftIcon={<Plus className="w-4 h-4" />}
+                >
+                  {activeTab === 'pagar' ? 'Nova Conta a Pagar' : 'Nova Conta a Receber'}
+                </Button>
+              </>
             )}
             
             {activeTab === 'extrato' && (
@@ -1141,7 +1271,16 @@ export default function FinanceiroPage() {
       {activeTab === 'contas' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {contasBancarias.map((conta) => (
-            <div key={conta.id} className="glass-card p-6">
+            <div key={conta.id} className="glass-card p-6 relative group">
+              {/* Botão de edição */}
+              <button
+                onClick={() => openContaBancariaModal(conta)}
+                className="absolute top-4 right-4 p-2 rounded-lg text-dark-400 hover:text-primary-400 hover:bg-primary-500/10 transition-colors opacity-0 group-hover:opacity-100"
+                title="Editar conta"
+              >
+                <Edit2 className="w-4 h-4" />
+              </button>
+              
               <div className="flex items-center gap-4 mb-4">
                 <div className="w-12 h-12 rounded-xl bg-primary-500/20 flex items-center justify-center">
                   <Building2 className="w-6 h-6 text-primary-400" />
@@ -1181,7 +1320,7 @@ export default function FinanceiroPage() {
                 title="Nenhuma conta bancária"
                 description="Cadastre suas contas bancárias para gerenciar o fluxo de caixa"
                 action={
-                  <Button onClick={() => setIsContaBancariaModalOpen(true)} leftIcon={<Plus className="w-4 h-4" />}>
+                  <Button onClick={() => openContaBancariaModal()} leftIcon={<Plus className="w-4 h-4" />}>
                     Nova Conta
                   </Button>
                 }
@@ -1359,6 +1498,54 @@ export default function FinanceiroPage() {
                 />
               </div>
             </div>
+            
+            {/* Seção de Recorrência */}
+            {!editingPagar && (
+              <div className="md:col-span-2 p-4 rounded-lg bg-dark-800/50 border border-dark-700">
+                <div className="flex items-center gap-3 mb-4">
+                  <input
+                    type="checkbox"
+                    id="recorrente-pagar"
+                    checked={formPagar.recorrente}
+                    onChange={(e) => setFormPagar({ ...formPagar, recorrente: e.target.checked })}
+                    className="w-4 h-4 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500"
+                  />
+                  <label htmlFor="recorrente-pagar" className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                    <Repeat className="w-4 h-4 text-primary-400" />
+                    Conta Recorrente (gerar múltiplos meses)
+                  </label>
+                </div>
+                
+                {formPagar.recorrente && (
+                  <div className="grid grid-cols-2 gap-4 mt-4">
+                    <div>
+                      <label className="block text-sm text-dark-300 mb-2">Quantidade de Meses</label>
+                      <input
+                        type="number"
+                        min="2"
+                        max="24"
+                        value={formPagar.meses_recorrentes}
+                        onChange={(e) => setFormPagar({ ...formPagar, meses_recorrentes: Number(e.target.value) })}
+                        className="input w-full"
+                      />
+                      <p className="text-xs text-dark-400 mt-1">Ex: 4 para gerar 4 contas mensais</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-dark-300 mb-2">Dia do Vencimento</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={formPagar.dia_vencimento}
+                        onChange={(e) => setFormPagar({ ...formPagar, dia_vencimento: Number(e.target.value) })}
+                        className="input w-full"
+                      />
+                      <p className="text-xs text-dark-400 mt-1">Dia fixo de vencimento em cada mês</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
@@ -1366,7 +1553,7 @@ export default function FinanceiroPage() {
               Cancelar
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? 'Salvando...' : 'Salvar'}
+              {saving ? 'Salvando...' : (formPagar.recorrente && formPagar.meses_recorrentes > 1 ? `Criar ${formPagar.meses_recorrentes} Contas` : 'Salvar')}
             </Button>
           </div>
         </form>
@@ -1472,6 +1659,54 @@ export default function FinanceiroPage() {
                 <option value="dinheiro">Dinheiro</option>
               </select>
             </div>
+            
+            {/* Seção de Recorrência */}
+            {!editingReceber && (
+              <div className="md:col-span-2 p-4 rounded-lg bg-dark-800/50 border border-dark-700">
+                <div className="flex items-center gap-3 mb-4">
+                  <input
+                    type="checkbox"
+                    id="recorrente-receber"
+                    checked={formReceber.recorrente}
+                    onChange={(e) => setFormReceber({ ...formReceber, recorrente: e.target.checked })}
+                    className="w-4 h-4 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500"
+                  />
+                  <label htmlFor="recorrente-receber" className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                    <Repeat className="w-4 h-4 text-green-400" />
+                    Recebimento Recorrente (gerar múltiplos meses)
+                  </label>
+                </div>
+                
+                {formReceber.recorrente && (
+                  <div className="grid grid-cols-2 gap-4 mt-4">
+                    <div>
+                      <label className="block text-sm text-dark-300 mb-2">Quantidade de Meses</label>
+                      <input
+                        type="number"
+                        min="2"
+                        max="24"
+                        value={formReceber.meses_recorrentes}
+                        onChange={(e) => setFormReceber({ ...formReceber, meses_recorrentes: Number(e.target.value) })}
+                        className="input w-full"
+                      />
+                      <p className="text-xs text-dark-400 mt-1">Ex: 3 para gerar 3 recebimentos mensais</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-dark-300 mb-2">Dia do Vencimento</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={formReceber.dia_vencimento}
+                        onChange={(e) => setFormReceber({ ...formReceber, dia_vencimento: Number(e.target.value) })}
+                        className="input w-full"
+                      />
+                      <p className="text-xs text-dark-400 mt-1">Dia fixo de vencimento em cada mês</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
@@ -1479,7 +1714,7 @@ export default function FinanceiroPage() {
               Cancelar
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? 'Salvando...' : 'Salvar'}
+              {saving ? 'Salvando...' : (formReceber.recorrente && formReceber.meses_recorrentes > 1 ? `Criar ${formReceber.meses_recorrentes} Recebimentos` : 'Salvar')}
             </Button>
           </div>
         </form>
@@ -1488,8 +1723,12 @@ export default function FinanceiroPage() {
       {/* Modal Conta Bancária */}
       <Modal
         isOpen={isContaBancariaModalOpen}
-        onClose={() => setIsContaBancariaModalOpen(false)}
-        title="Nova Conta Bancária"
+        onClose={() => {
+          setIsContaBancariaModalOpen(false)
+          setEditingContaBancaria(null)
+          setFormContaBancaria({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: 0 })
+        }}
+        title={editingContaBancaria ? 'Editar Conta Bancária' : 'Nova Conta Bancária'}
       >
         <form onSubmit={handleSaveContaBancaria} className="space-y-4">
           <div>
@@ -1550,19 +1789,25 @@ export default function FinanceiroPage() {
             </div>
           </div>
           
-          <div>
-            <label className="block text-sm text-dark-300 mb-2">Saldo Inicial</label>
-            <input
-              type="number"
-              step="0.01"
-              value={formContaBancaria.saldo_inicial}
-              onChange={(e) => setFormContaBancaria({ ...formContaBancaria, saldo_inicial: Number(e.target.value) })}
-              className="input w-full"
-            />
-          </div>
+          {!editingContaBancaria && (
+            <div>
+              <label className="block text-sm text-dark-300 mb-2">Saldo Inicial</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formContaBancaria.saldo_inicial}
+                onChange={(e) => setFormContaBancaria({ ...formContaBancaria, saldo_inicial: Number(e.target.value) })}
+                className="input w-full"
+              />
+            </div>
+          )}
           
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-700">
-            <Button type="button" variant="secondary" onClick={() => setIsContaBancariaModalOpen(false)}>
+            <Button type="button" variant="secondary" onClick={() => {
+              setIsContaBancariaModalOpen(false)
+              setEditingContaBancaria(null)
+              setFormContaBancaria({ nome: '', banco: '', agencia: '', conta: '', tipo: 'corrente', saldo_inicial: 0 })
+            }}>
               Cancelar
             </Button>
             <Button type="submit" disabled={saving}>
