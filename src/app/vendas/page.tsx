@@ -602,7 +602,20 @@ export default function VendasPage() {
         await loadData()
         setIsNFModalOpen(false)
       } else {
-        throw new Error(resultado.error || 'Erro ao cancelar nota fiscal')
+        // Extrair mensagem detalhada do erro
+        let errorMsg = resultado.error || 'Erro ao cancelar nota fiscal'
+        
+        // Se houver mensagem da SEFAZ, mostrar
+        if (resultado.data?.mensagem_sefaz) {
+          errorMsg = `${resultado.data.mensagem_sefaz}`
+        }
+        
+        // Se houver status da SEFAZ, adicionar
+        if (resultado.data?.status_sefaz) {
+          errorMsg = `Código ${resultado.data.status_sefaz}: ${errorMsg}`
+        }
+        
+        throw new Error(errorMsg)
       }
     } catch (error: any) {
       console.error('Erro ao cancelar nota fiscal:', error)

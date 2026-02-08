@@ -215,6 +215,47 @@ export interface ItemNotaEntrada {
   produto?: Produto
 }
 
+// ==================== TIPOS - NOTAS FISCAIS DE SAÍDA ====================
+
+export interface NotaFiscalSaida {
+  id: number
+  referencia: string
+  venda_id: number | null
+  tipo: 'nfe' | 'nfce' | 'nfse'
+  numero: string | null
+  serie: string | null
+  chave_acesso: string | null
+  status: 'pendente' | 'processando' | 'processando_autorizacao' | 'autorizado' | 'cancelada' | 'rejeitada' | 'denegada' | 'erro_autorizacao'
+  status_sefaz: string | null
+  mensagem_sefaz: string | null
+  destinatario_nome: string | null
+  destinatario_documento: string | null
+  destinatario_email: string | null
+  valor_total: number
+  valor_produtos: number
+  valor_desconto: number
+  valor_frete: number
+  url_xml: string | null
+  url_danfe: string | null
+  url_xml_cancelamento: string | null
+  carta_correcao_numero: number | null
+  carta_correcao_texto: string | null
+  url_carta_correcao_xml: string | null
+  url_carta_correcao_pdf: string | null
+  cancelada_em: string | null
+  cancelamento_justificativa: string | null
+  cancelamento_protocolo: string | null
+  dados_envio: any | null
+  dados_retorno: any | null
+  emitida_em: string | null
+  ambiente: string | null
+  created_at?: string
+  updated_at?: string
+  // Campos de join (virtuais)
+  venda?: Venda
+  cliente?: Cliente
+}
+
 // ==================== TIPOS - FINANCEIRO ====================
 
 export interface CategoriaFinanceira {
@@ -1111,6 +1152,55 @@ export async function fetchNotasFiscaisEntrada(): Promise<NotaFiscalEntrada[]> {
   return data || []
 }
 
+// ==================== FUNÇÕES - NOTAS FISCAIS DE SAÍDA ====================
+
+export async function fetchNotasFiscaisSaida(): Promise<NotaFiscalSaida[]> {
+  const { data, error } = await supabase
+    .from('notas_fiscais')
+    .select(`
+      *,
+      venda:vendas!notas_fiscais_venda_id_fkey(
+        id,
+        numero,
+        data_venda,
+        valor_total,
+        cliente:clientes(id, nome, razao_social, cnpj, cpf)
+      )
+    `)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  
+  // Mapear dados para estrutura esperada
+  return (data || []).map((nf: any) => ({
+    ...nf,
+    cliente: nf.venda?.cliente || null
+  }))
+}
+
+export async function fetchNotaFiscalSaidaByVendaId(vendaId: number): Promise<NotaFiscalSaida | null> {
+  const { data, error } = await supabase
+    .from('notas_fiscais')
+    .select(`
+      *,
+      venda:vendas!notas_fiscais_venda_id_fkey(
+        id,
+        numero,
+        data_venda,
+        valor_total,
+        cliente:clientes(id, nome, razao_social, cnpj, cpf)
+      )
+    `)
+    .eq('venda_id', vendaId)
+    .neq('status', 'cancelada')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (error) return null
+  return data
+}
+
 export async function fetchNotaFiscalByChave(chave: string): Promise<NotaFiscalEntrada | null> {
   const { data, error } = await supabase
     .from('notas_fiscais_entrada')
@@ -1523,6 +1613,74 @@ export async function deleteNotaFiscalEntradaCascade(notaId: number): Promise<{ 
     }
   } catch (err) {
     console.error('Erro na exclusão cascata:', err)
+    return { success: false, message: 'Erro ao processar exclusão: ' + (err instanceof Error ? err.message : 'Erro desconhecido') }
+  }
+}
+
+// Excluir nota fiscal de SAÍDA com cascade
+export async function deleteNotaFiscalSaidaCascade(notaId: number): Promise<{ success: boolean; message: string }> {
+  try {
+    // 1. Buscar a nota para verificar se existe
+    const { data: nota, error: notaError } = await supabase
+      .from('notas_fiscais')
+      .select('*')
+      .eq('id', notaId)
+      .single()
+
+    if (notaError || !nota) {
+      return { success: false, message: 'Nota fiscal não encontrada' }
+    }
+
+    // 2. Verificar se a nota já foi autorizada pela SEFAZ
+    if (nota.status === 'autorizado' || nota.status === 'autorizada') {
+      return { 
+        success: false, 
+        message: 'Não é possível excluir uma nota fiscal já autorizada pela SEFAZ. Use a opção de cancelamento.' 
+      }
+    }
+
+    // 3. Deletar eventos da nota fiscal
+    await supabase
+      .from('notas_fiscais_eventos')
+      .delete()
+      .eq('nota_fiscal_id', notaId)
+
+    // 4. Deletar lançamentos financeiros vinculados à nota de saída
+    await supabase
+      .from('lancamentos_financeiros')
+      .delete()
+      .eq('nota_fiscal_saida_id', notaId)
+
+    // 5. Se houver venda vinculada, limpar referência na venda
+    if (nota.venda_id) {
+      await supabase
+        .from('vendas')
+        .update({
+          nota_fiscal_emitida: false,
+          numero_nf: null,
+          chave_nf: null,
+          nota_fiscal_status: null,
+          nota_fiscal_id: null
+        })
+        .eq('id', nota.venda_id)
+    }
+
+    // 6. Finalmente, deletar a nota fiscal
+    const { error: deleteError } = await supabase
+      .from('notas_fiscais')
+      .delete()
+      .eq('id', notaId)
+
+    if (deleteError) {
+      return { success: false, message: 'Erro ao excluir nota fiscal: ' + deleteError.message }
+    }
+
+    return { 
+      success: true, 
+      message: 'Nota fiscal de saída excluída com sucesso.' 
+    }
+  } catch (err) {
+    console.error('Erro na exclusão de NF saída:', err)
     return { success: false, message: 'Erro ao processar exclusão: ' + (err instanceof Error ? err.message : 'Erro desconhecido') }
   }
 }

@@ -75,8 +75,13 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (notaError || !nota) {
+      console.log('[NFe] Nota não encontrada:', { venda_id, error: notaError })
       return NextResponse.json(
-        { error: 'Nota fiscal não encontrada para esta venda', code: 'NOT_FOUND' },
+        { 
+          error: 'Nota fiscal não encontrada para esta venda', 
+          code: 'NOT_FOUND',
+          details: notaError?.message || 'Nenhuma nota fiscal vinculada a esta venda'
+        },
         { status: 404 }
       )
     }

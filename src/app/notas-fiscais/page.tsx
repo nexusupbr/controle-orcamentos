@@ -16,8 +16,9 @@ import {
   fetchNotasFiscaisEntrada, fetchFornecedores, fetchProdutos,
   createNotaFiscalEntrada, createFornecedor, createProduto,
   createMovimentacaoEstoque, createContaPagar,
-  deleteNotaFiscalEntradaCascade,
-  NotaFiscalEntrada, Fornecedor, Produto
+  deleteNotaFiscalEntradaCascade, fetchNotasFiscaisSaida,
+  deleteNotaFiscalSaidaCascade,
+  NotaFiscalEntrada, NotaFiscalSaida, Fornecedor, Produto
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn, normalizeUnidade } from '@/lib/utils'
 
@@ -65,6 +66,7 @@ interface NFData {
 export default function NotasFiscaisPage() {
   const [loading, setLoading] = useState(true)
   const [notas, setNotas] = useState<NotaFiscalEntrada[]>([])
+  const [notasSaida, setNotasSaida] = useState<NotaFiscalSaida[]>([])
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([])
   const [produtos, setProdutos] = useState<Produto[]>([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -80,6 +82,10 @@ export default function NotasFiscaisPage() {
   // Modal de visualização
   const [isViewModalOpen, setIsViewModalOpen] = useState(false)
   const [selectedNota, setSelectedNota] = useState<NotaFiscalEntrada | null>(null)
+  
+  // Modal de visualização NF Saída
+  const [isViewSaidaModalOpen, setIsViewSaidaModalOpen] = useState(false)
+  const [selectedNotaSaida, setSelectedNotaSaida] = useState<NotaFiscalSaida | null>(null)
 
   // Opções para itens
   const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'ignorar'>>({})
@@ -98,12 +104,14 @@ export default function NotasFiscaisPage() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const [notasData, fornecedoresData, produtosData] = await Promise.all([
+      const [notasData, notasSaidaData, fornecedoresData, produtosData] = await Promise.all([
         fetchNotasFiscaisEntrada(),
+        fetchNotasFiscaisSaida(),
         fetchFornecedores(),
         fetchProdutos()
       ])
       setNotas(notasData)
+      setNotasSaida(notasSaidaData)
       setFornecedores(fornecedoresData)
       setProdutos(produtosData)
     } catch (error) {
@@ -446,6 +454,11 @@ export default function NotasFiscaisPage() {
     setIsViewModalOpen(true)
   }
 
+  const openViewNotaSaida = (nota: NotaFiscalSaida) => {
+    setSelectedNotaSaida(nota)
+    setIsViewSaidaModalOpen(true)
+  }
+
   const filteredNotas = notas.filter(n => {
     const matchSearch = 
       n.numero?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -455,10 +468,103 @@ export default function NotasFiscaisPage() {
     return matchSearch
   })
 
-  // KPIs
+  const filteredNotasSaida = notasSaida.filter(n => {
+    const clienteNome = n.destinatario_nome || n.cliente?.nome || n.cliente?.razao_social || ''
+    const matchSearch = 
+      n.numero?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      clienteNome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      n.chave_acesso?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      n.referencia?.toLowerCase().includes(searchTerm.toLowerCase())
+    
+    return matchSearch
+  })
+
+  // KPIs - Entrada
   const totalNotas = notas.length
   const valorTotalNotas = notas.reduce((acc, n) => acc + (n.valor_total || 0), 0)
   const notasHoje = notas.filter(n => n.data_entrada === new Date().toISOString().split('T')[0]).length
+
+  // KPIs - Saída
+  const totalNotasSaida = notasSaida.length
+  const notasSaidaAutorizadas = notasSaida.filter(n => n.status === 'autorizado' || n.status === 'autorizada')
+  const valorTotalSaida = notasSaidaAutorizadas.reduce((acc, n) => acc + (n.valor_total || 0), 0)
+  const notasSaidaHoje = notasSaida.filter(n => {
+    const dataEmissao = n.emitida_em || n.created_at
+    return dataEmissao?.split('T')[0] === new Date().toISOString().split('T')[0]
+  }).length
+
+  // Helper para status badge da NF Saída
+  const getStatusBadge = (status: string) => {
+    const statusConfig: Record<string, { variant: 'success' | 'warning' | 'danger' | 'info', label: string }> = {
+      'autorizado': { variant: 'success', label: 'Autorizada' },
+      'autorizada': { variant: 'success', label: 'Autorizada' },
+      'pendente': { variant: 'warning', label: 'Pendente' },
+      'processando': { variant: 'info', label: 'Processando' },
+      'processando_autorizacao': { variant: 'info', label: 'Aguardando SEFAZ' },
+      'cancelada': { variant: 'danger', label: 'Cancelada' },
+      'rejeitada': { variant: 'danger', label: 'Rejeitada' },
+      'denegada': { variant: 'danger', label: 'Denegada' },
+      'erro_autorizacao': { variant: 'danger', label: 'Erro' }
+    }
+    const config = statusConfig[status] || { variant: 'warning', label: status }
+    return <Badge variant={config.variant}>{config.label}</Badge>
+  }
+
+  // Helper para verificar se nota é autorizada
+  const isNotaAutorizada = (status: string) => status === 'autorizado' || status === 'autorizada'
+
+  // URL base para DANFE/XML
+  const getBaseUrl = () => {
+    const ambiente = process.env.NEXT_PUBLIC_FOCUS_NFE_AMBIENTE || 'homologacao'
+    return ambiente === 'producao' 
+      ? 'https://api.focusnfe.com.br' 
+      : 'https://homologacao.focusnfe.com.br'
+  }
+
+  const handleBaixarDanfe = (nota: NotaFiscalSaida) => {
+    if (nota.url_danfe) {
+      const url = nota.url_danfe.startsWith('http') ? nota.url_danfe : `${getBaseUrl()}${nota.url_danfe}`
+      window.open(url, '_blank')
+    } else if (nota.referencia) {
+      window.open(`${getBaseUrl()}/v2/nfe/${nota.referencia}/danfe`, '_blank')
+    }
+  }
+
+  const handleBaixarXml = (nota: NotaFiscalSaida) => {
+    if (nota.url_xml) {
+      const url = nota.url_xml.startsWith('http') ? nota.url_xml : `${getBaseUrl()}${nota.url_xml}`
+      window.open(url, '_blank')
+    } else if (nota.referencia) {
+      window.open(`${getBaseUrl()}/v2/nfe/${nota.referencia}/xml`, '_blank')
+    }
+  }
+
+  // Excluir NF de Saída
+  const handleDeleteNotaSaida = async (nota: NotaFiscalSaida) => {
+    // Verificar se é autorizada
+    if (nota.status === 'autorizado' || nota.status === 'autorizada') {
+      alert('⚠️ Não é possível excluir uma nota fiscal já autorizada pela SEFAZ.\n\nUse a opção de cancelamento na tela de Vendas.')
+      return
+    }
+
+    if (!confirm(`Tem certeza que deseja excluir esta nota fiscal?\n\nReferência: ${nota.referencia}\nStatus: ${nota.status}\n\nEsta ação não pode ser desfeita.`)) {
+      return
+    }
+
+    try {
+      const result = await deleteNotaFiscalSaidaCascade(nota.id)
+      
+      if (result.success) {
+        alert('✅ ' + result.message)
+        await loadData()
+      } else {
+        alert('❌ ' + result.message)
+      }
+    } catch (error: any) {
+      console.error('Erro ao excluir nota:', error)
+      alert('❌ Erro ao excluir nota fiscal: ' + (error.message || error))
+    }
+  }
 
   const tabs = [
     { id: 'entrada', label: 'NF Entrada', icon: ArrowDownLeft },
@@ -504,12 +610,22 @@ export default function NotasFiscaisPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="glass-card p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary-500/20">
-              <FileText className="w-5 h-5 text-primary-400" />
+            <div className={cn(
+              "p-2 rounded-lg",
+              activeTab === 'entrada' ? "bg-primary-500/20" : "bg-orange-500/20"
+            )}>
+              <FileText className={cn(
+                "w-5 h-5",
+                activeTab === 'entrada' ? "text-primary-400" : "text-orange-400"
+              )} />
             </div>
             <div>
-              <p className="text-dark-400 text-sm">Total de Notas</p>
-              <p className="text-xl font-bold text-white">{totalNotas}</p>
+              <p className="text-dark-400 text-sm">
+                {activeTab === 'entrada' ? 'Total NF Entrada' : 'Total NF Saída'}
+              </p>
+              <p className="text-xl font-bold text-white">
+                {activeTab === 'entrada' ? totalNotas : totalNotasSaida}
+              </p>
             </div>
           </div>
         </div>
@@ -519,8 +635,12 @@ export default function NotasFiscaisPage() {
               <DollarSign className="w-5 h-5 text-green-400" />
             </div>
             <div>
-              <p className="text-dark-400 text-sm">Valor Total</p>
-              <p className="text-xl font-bold text-green-400">{formatCurrency(valorTotalNotas)}</p>
+              <p className="text-dark-400 text-sm">
+                {activeTab === 'entrada' ? 'Valor Total Entrada' : 'Valor Autorizadas'}
+              </p>
+              <p className="text-xl font-bold text-green-400">
+                {formatCurrency(activeTab === 'entrada' ? valorTotalNotas : valorTotalSaida)}
+              </p>
             </div>
           </div>
         </div>
@@ -531,18 +651,33 @@ export default function NotasFiscaisPage() {
             </div>
             <div>
               <p className="text-dark-400 text-sm">Notas Hoje</p>
-              <p className="text-xl font-bold text-blue-400">{notasHoje}</p>
+              <p className="text-xl font-bold text-blue-400">
+                {activeTab === 'entrada' ? notasHoje : notasSaidaHoje}
+              </p>
             </div>
           </div>
         </div>
         <div className="glass-card p-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-purple-500/20">
-              <Package className="w-5 h-5 text-purple-400" />
+            <div className={cn(
+              "p-2 rounded-lg",
+              activeTab === 'entrada' ? "bg-purple-500/20" : "bg-emerald-500/20"
+            )}>
+              {activeTab === 'entrada' 
+                ? <Package className="w-5 h-5 text-purple-400" />
+                : <CheckCircle className="w-5 h-5 text-emerald-400" />
+              }
             </div>
             <div>
-              <p className="text-dark-400 text-sm">Produtos Cadastrados</p>
-              <p className="text-xl font-bold text-purple-400">{produtos.length}</p>
+              <p className="text-dark-400 text-sm">
+                {activeTab === 'entrada' ? 'Produtos Cadastrados' : 'Autorizadas'}
+              </p>
+              <p className={cn(
+                "text-xl font-bold",
+                activeTab === 'entrada' ? "text-purple-400" : "text-emerald-400"
+              )}>
+                {activeTab === 'entrada' ? produtos.length : notasSaidaAutorizadas.length}
+              </p>
             </div>
           </div>
         </div>
@@ -689,6 +824,22 @@ export default function NotasFiscaisPage() {
                           >
                             <Download className="w-4 h-4 text-dark-400" />
                           </button>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Tem certeza que deseja excluir a NF ${nota.numero}?\n\nIsso irá reverter o estoque e remover lançamentos financeiros vinculados.`)) return
+                              const result = await deleteNotaFiscalEntradaCascade(nota.id)
+                              if (result.success) {
+                                alert('✅ ' + result.message)
+                                await loadData()
+                              } else {
+                                alert('❌ ' + result.message)
+                              }
+                            }}
+                            className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                            title="Excluir nota fiscal"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-400" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -719,12 +870,108 @@ export default function NotasFiscaisPage() {
       )}
 
       {activeTab === 'saida' && (
-        <div className="glass-card p-8">
-          <EmptyState
-            icon={<ArrowUpRight className="w-10 h-10 text-dark-500" />}
-            title="Notas Fiscais de Saída"
-            description="As notas fiscais de saída são geradas a partir das vendas. Vá em Vendas para emitir NF."
-          />
+        <div className="glass-card overflow-hidden">
+          {filteredNotasSaida.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Número</th>
+                    <th>Data</th>
+                    <th>Cliente</th>
+                    <th className="text-right">Valor</th>
+                    <th>Status</th>
+                    <th className="text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredNotasSaida.map((nota) => {
+                    const clienteNome = nota.destinatario_nome || nota.cliente?.nome || nota.cliente?.razao_social || 'Consumidor Final'
+                    const clienteDoc = nota.destinatario_documento || nota.cliente?.cnpj || nota.cliente?.cpf || ''
+                    const dataEmissao = nota.emitida_em || nota.created_at
+                    
+                    return (
+                      <tr key={nota.id} className="group">
+                        <td>
+                          <div>
+                            <span className="font-medium text-white">
+                              {nota.numero || '-'}
+                            </span>
+                            <span className="text-dark-400 text-sm block">
+                              {nota.serie ? `Série ${nota.serie}` : `Ref: ${nota.referencia?.slice(0, 12)}...`}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="text-dark-300">
+                          {dataEmissao ? formatDate(dataEmissao.split('T')[0]) : '-'}
+                        </td>
+                        <td>
+                          <div>
+                            <span className="text-white">{clienteNome}</span>
+                            {clienteDoc && (
+                              <span className="text-dark-400 text-sm block">
+                                {clienteDoc}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="text-right font-medium text-white">
+                          {formatCurrency(nota.valor_total || 0)}
+                        </td>
+                        <td>
+                          {getStatusBadge(nota.status)}
+                        </td>
+                        <td>
+                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => openViewNotaSaida(nota)}
+                              className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
+                              title="Visualizar"
+                            >
+                              <Eye className="w-4 h-4 text-dark-400" />
+                            </button>
+                            {isNotaAutorizada(nota.status) && (
+                              <>
+                                <button
+                                  onClick={() => handleBaixarDanfe(nota)}
+                                  className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
+                                  title="Download DANFE"
+                                >
+                                  <FileText className="w-4 h-4 text-blue-400" />
+                                </button>
+                                <button
+                                  onClick={() => handleBaixarXml(nota)}
+                                  className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
+                                  title="Download XML"
+                                >
+                                  <Download className="w-4 h-4 text-green-400" />
+                                </button>
+                              </>
+                            )}
+                            {!isNotaAutorizada(nota.status) && (
+                              <button
+                                onClick={() => handleDeleteNotaSaida(nota)}
+                                className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                                title="Excluir nota fiscal"
+                              >
+                                <Trash2 className="w-4 h-4 text-red-400" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              icon={<ArrowUpRight className="w-10 h-10 text-dark-500" />}
+              title="Nenhuma nota fiscal de saída encontrada"
+              description="As notas fiscais de saída são geradas a partir das vendas. Vá em Comercial → Vendas para emitir NF."
+            />
+          )}
         </div>
       )}
 
@@ -1022,6 +1269,145 @@ export default function NotasFiscaisPage() {
             </div>
           )}
         </div>
+      </Modal>
+
+      {/* Modal Visualizar NF Saída */}
+      <Modal
+        isOpen={isViewSaidaModalOpen}
+        onClose={() => setIsViewSaidaModalOpen(false)}
+        title={`NF Saída ${selectedNotaSaida?.numero || selectedNotaSaida?.referencia?.slice(0, 12) + '...'}`}
+        size="lg"
+      >
+        {selectedNotaSaida && (
+          <div className="space-y-6">
+            {/* Status */}
+            <div className="flex items-center gap-3">
+              {getStatusBadge(selectedNotaSaida.status)}
+              {selectedNotaSaida.status === 'autorizado' && selectedNotaSaida.ambiente === 'homologacao' && (
+                <span className="text-xs text-yellow-400 bg-yellow-400/10 px-2 py-1 rounded">
+                  HOMOLOGAÇÃO
+                </span>
+              )}
+            </div>
+
+            {/* Dados da Nota */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-dark-400 text-sm">Número/Série</p>
+                <p className="text-white font-medium">
+                  {selectedNotaSaida.numero || '-'} / {selectedNotaSaida.serie || '1'}
+                </p>
+              </div>
+              <div>
+                <p className="text-dark-400 text-sm">Data Emissão</p>
+                <p className="text-white font-medium">
+                  {selectedNotaSaida.emitida_em 
+                    ? formatDate(selectedNotaSaida.emitida_em.split('T')[0])
+                    : selectedNotaSaida.created_at
+                      ? formatDate(selectedNotaSaida.created_at.split('T')[0])
+                      : '-'
+                  }
+                </p>
+              </div>
+              <div className="col-span-2">
+                <p className="text-dark-400 text-sm">Cliente/Destinatário</p>
+                <p className="text-white font-medium">
+                  {selectedNotaSaida.destinatario_nome || selectedNotaSaida.cliente?.nome || selectedNotaSaida.cliente?.razao_social || 'Consumidor Final'}
+                </p>
+                {(selectedNotaSaida.destinatario_documento || selectedNotaSaida.cliente?.cnpj || selectedNotaSaida.cliente?.cpf) && (
+                  <p className="text-dark-400 text-sm">
+                    {selectedNotaSaida.destinatario_documento || selectedNotaSaida.cliente?.cnpj || selectedNotaSaida.cliente?.cpf}
+                  </p>
+                )}
+              </div>
+              {selectedNotaSaida.chave_acesso && (
+                <div className="col-span-2">
+                  <p className="text-dark-400 text-sm">Chave de Acesso</p>
+                  <p className="text-white font-mono text-sm break-all">{selectedNotaSaida.chave_acesso}</p>
+                </div>
+              )}
+              <div className="col-span-2">
+                <p className="text-dark-400 text-sm">Referência</p>
+                <p className="text-white font-mono text-sm">{selectedNotaSaida.referencia}</p>
+              </div>
+            </div>
+
+            {/* Valores */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-dark-600">
+              <div>
+                <p className="text-dark-400 text-sm">Produtos</p>
+                <p className="text-white">{formatCurrency(selectedNotaSaida.valor_produtos || 0)}</p>
+              </div>
+              <div>
+                <p className="text-dark-400 text-sm">Frete</p>
+                <p className="text-white">{formatCurrency(selectedNotaSaida.valor_frete || 0)}</p>
+              </div>
+              <div>
+                <p className="text-dark-400 text-sm">Desconto</p>
+                <p className="text-red-400">{formatCurrency(selectedNotaSaida.valor_desconto || 0)}</p>
+              </div>
+              <div>
+                <p className="text-dark-400 text-sm">Total</p>
+                <p className="text-green-400 font-bold">{formatCurrency(selectedNotaSaida.valor_total || 0)}</p>
+              </div>
+            </div>
+
+            {/* Mensagem SEFAZ (se houver) */}
+            {selectedNotaSaida.mensagem_sefaz && (
+              <div className="pt-4 border-t border-dark-600">
+                <p className="text-dark-400 text-sm">Mensagem SEFAZ</p>
+                <p className="text-white text-sm">{selectedNotaSaida.mensagem_sefaz}</p>
+              </div>
+            )}
+
+            {/* Cancelamento (se houver) */}
+            {selectedNotaSaida.status === 'cancelada' && (
+              <div className="pt-4 border-t border-dark-600 bg-red-500/10 p-3 rounded-lg">
+                <p className="text-red-400 font-medium">Nota Cancelada</p>
+                {selectedNotaSaida.cancelada_em && (
+                  <p className="text-dark-400 text-sm">
+                    Data: {formatDate(selectedNotaSaida.cancelada_em.split('T')[0])}
+                  </p>
+                )}
+                {selectedNotaSaida.cancelamento_justificativa && (
+                  <p className="text-dark-300 text-sm mt-1">
+                    Justificativa: {selectedNotaSaida.cancelamento_justificativa}
+                  </p>
+                )}
+                {selectedNotaSaida.cancelamento_protocolo && (
+                  <p className="text-dark-400 text-sm">
+                    Protocolo: {selectedNotaSaida.cancelamento_protocolo}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Ações */}
+            <div className="flex justify-end gap-3 pt-4 border-t border-dark-600">
+              {selectedNotaSaida.status === 'autorizado' && (
+                <>
+                  <Button 
+                    variant="secondary" 
+                    leftIcon={<FileText className="w-4 h-4" />}
+                    onClick={() => handleBaixarDanfe(selectedNotaSaida)}
+                  >
+                    DANFE
+                  </Button>
+                  <Button 
+                    variant="secondary" 
+                    leftIcon={<Download className="w-4 h-4" />}
+                    onClick={() => handleBaixarXml(selectedNotaSaida)}
+                  >
+                    XML
+                  </Button>
+                </>
+              )}
+              <Button variant="secondary" onClick={() => setIsViewSaidaModalOpen(false)}>
+                Fechar
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
