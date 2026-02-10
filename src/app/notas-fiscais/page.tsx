@@ -88,7 +88,7 @@ export default function NotasFiscaisPage() {
   const [selectedNotaSaida, setSelectedNotaSaida] = useState<NotaFiscalSaida | null>(null)
 
   // Opções para itens
-  const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'ignorar'>>({})
+  const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'vincular' | 'ignorar'>>({})
   const [itemSubstituicao, setItemSubstituicao] = useState<Record<number, number>>({})
 
   // Seleção e exclusão em massa
@@ -325,14 +325,20 @@ export default function NotasFiscaisPage() {
   const handleImportNF = async () => {
     if (!xmlData) return
 
-    // Validar se todos os itens com "substituir" têm um produto selecionado
+    // Validar se todos os itens com vinculação têm um produto selecionado
     for (let i = 0; i < xmlData.itens.length; i++) {
       const item = xmlData.itens[i]
       const acao = itemOptions[i]
       
-      // Se escolheu "substituir" e não é um produto já existente no sistema
+      // Se escolheu "substituir" (novo → existente) e não tem produto selecionado
       if (acao === 'substituir' && item.acao !== 'existente' && !itemSubstituicao[i]) {
         alert(`Por favor, selecione um produto existente para vincular ao item "${item.descricao}" ou escolha "Cadastrar novo produto".`)
+        return
+      }
+      
+      // Se escolheu "vincular" (existente → outro produto) e não selecionou
+      if (acao === 'vincular' && !itemSubstituicao[i]) {
+        alert(`Por favor, selecione o produto para vincular ao item "${item.descricao}" ou escolha "Atualizar estoque".`)
         return
       }
     }
@@ -387,7 +393,7 @@ export default function NotasFiscaisPage() {
             observacao: `Entrada via XML - NF ${xmlData.numero}`
           })
         } else if (acao === 'substituir') {
-          // Usar produto existente (seja detectado automaticamente ou selecionado manualmente)
+          // Usar produto existente (detectado automaticamente ou selecionado manualmente)
           const produtoParaAtualizar = itemSubstituicao[i] || item.produto_id
           
           if (produtoParaAtualizar) {
@@ -404,6 +410,24 @@ export default function NotasFiscaisPage() {
               observacao: `Entrada via XML - NF ${xmlData.numero}`
             })
           }
+        } else if (acao === 'vincular') {
+          // Produto existente sendo vinculado a OUTRO produto
+          const produtoSelecionado = itemSubstituicao[i]
+          
+          if (produtoSelecionado) {
+            produtoId = produtoSelecionado
+            
+            // Atualizar estoque do produto selecionado
+            await createMovimentacaoEstoque({
+              produto_id: produtoSelecionado,
+              tipo: 'entrada',
+              quantidade: item.quantidade,
+              valor_unitario: item.valor_unitario,
+              valor_total: item.valor_total,
+              motivo: `NF ${xmlData.numero}`,
+              observacao: `Entrada via XML - NF ${xmlData.numero} (vinculado manualmente)`
+            })
+          }
         }
         // Se acao === 'ignorar', não faz nada
 
@@ -418,7 +442,7 @@ export default function NotasFiscaisPage() {
           valor_unitario: item.valor_unitario,
           valor_total: item.valor_total,
           valor_desconto: item.valor_desconto,
-          acao: acao === 'cadastrar' ? 'cadastrado' : acao === 'substituir' ? 'existente' : 'ignorado'
+          acao: acao === 'cadastrar' ? 'cadastrado' : (acao === 'substituir' || acao === 'vincular') ? 'existente' : 'ignorado'
         })
       }
 
@@ -1117,10 +1141,10 @@ export default function NotasFiscaisPage() {
                         <select
                           value={itemOptions[index] || 'cadastrar'}
                           onChange={(e) => {
-                            const value = e.target.value as 'cadastrar' | 'substituir' | 'ignorar'
+                            const value = e.target.value as 'cadastrar' | 'substituir' | 'vincular' | 'ignorar'
                             setItemOptions(prev => ({ ...prev, [index]: value }))
-                            // Limpar substituição se mudar para cadastrar
-                            if (value === 'cadastrar') {
+                            // Limpar substituição se mudar para cadastrar ou atualizar estoque original
+                            if (value === 'cadastrar' || value === 'substituir') {
                               setItemSubstituicao(prev => {
                                 const newState = { ...prev }
                                 delete newState[index]
@@ -1133,6 +1157,7 @@ export default function NotasFiscaisPage() {
                           {item.acao === 'existente' ? (
                             <>
                               <option value="substituir">Atualizar estoque</option>
+                              <option value="vincular">Vincular a outro produto</option>
                               <option value="ignorar">Ignorar</option>
                             </>
                           ) : (
@@ -1145,11 +1170,13 @@ export default function NotasFiscaisPage() {
                         </select>
                       </div>
                       
-                      {/* Seletor de produto existente quando escolher "Vincular a existente" */}
-                      {item.acao !== 'existente' && itemOptions[index] === 'substituir' && (
+                      {/* Seletor de produto existente quando escolher "Vincular" */}
+                      {((item.acao !== 'existente' && itemOptions[index] === 'substituir') || (item.acao === 'existente' && itemOptions[index] === 'vincular')) && (
                         <div className="bg-dark-700 p-3 rounded-lg">
                           <label className="text-dark-300 text-sm block mb-2">
-                            Selecione o produto existente para vincular:
+                            {item.acao === 'existente' 
+                              ? 'Selecione outro produto para vincular (substituir o detectado):' 
+                              : 'Selecione o produto existente para vincular:'}
                           </label>
                           <select
                             value={itemSubstituicao[index] || ''}
