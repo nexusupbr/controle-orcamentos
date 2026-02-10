@@ -138,6 +138,11 @@ export default function ComprasPage() {
   const [itemAcoes, setItemAcoes] = useState<Record<number, 'auto' | 'vincular' | 'cadastrar' | 'ignorar'>>({})
   const [itemVinculos, setItemVinculos] = useState<Record<number, number>>({})
   
+  // Busca de produto no vincular
+  const [buscaProdutoVincular, setBuscaProdutoVincular] = useState<Record<number, string>>({})
+  const [dropdownAberto, setDropdownAberto] = useState<number | null>(null)
+  const dropdownRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  
   // Modal para ver produtos de uma nota já importada
   const [showProdutosNotaModal, setShowProdutosNotaModal] = useState(false)
   const [produtosNotaSelecionada, setProdutosNotaSelecionada] = useState<ItemNotaEntrada[]>([])
@@ -149,6 +154,20 @@ export default function ComprasPage() {
   useEffect(() => {
     loadData()
   }, [])
+
+  // Fechar dropdown de busca ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownAberto !== null) {
+        const ref = dropdownRefs.current[dropdownAberto]
+        if (ref && !ref.contains(e.target as Node)) {
+          setDropdownAberto(null)
+        }
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [dropdownAberto])
 
   const loadData = async () => {
     try {
@@ -1104,7 +1123,7 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                   )}
                 </div>
                 
-                <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                <div className="space-y-2">
                   {dadosNF.produtos.map((prod, index) => {
                     const status = produtosStatus.get(index)
                     const isExistente = status?.existente
@@ -1122,7 +1141,7 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                     return (
                       <div 
                         key={index} 
-                        className={`glass-card p-3 border-l-4 ${borderColor}`}
+                        className={`glass-card p-3 border-l-4 ${borderColor} ${dropdownAberto === index ? 'relative z-[60]' : 'relative z-0'}`}
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1">
@@ -1229,39 +1248,109 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                           </div>
                         </div>
                         
-                        {/* Seletor de produto quando "Vincular" */}
+                        {/* Seletor de produto quando "Vincular" - Com busca */}
                         {acaoItem === 'vincular' && (
                           <div className="mt-3 pt-3 border-t border-dark-600">
                             <label className="text-dark-300 text-xs block mb-2">
-                              Selecione o produto existente para vincular:
+                              Pesquise e selecione o produto existente para vincular:
                             </label>
-                            <select
-                              value={itemVinculos[index] || ''}
-                              onChange={(e) => {
-                                const produtoId = parseInt(e.target.value)
-                                if (produtoId) {
-                                  setItemVinculos(prev => ({ ...prev, [index]: produtoId }))
-                                } else {
-                                  setItemVinculos(prev => {
-                                    const newState = { ...prev }
-                                    delete newState[index]
-                                    return newState
-                                  })
-                                }
-                              }}
-                              className="input w-full text-sm"
-                            >
-                              <option value="">-- Selecione um produto --</option>
-                              {produtos
-                                .filter(p => p.ativo !== false)
-                                .sort((a, b) => a.nome.localeCompare(b.nome))
-                                .map(produto => (
-                                  <option key={produto.id} value={produto.id}>
-                                    {produto.codigo ? `[${produto.codigo}] ` : ''}{produto.nome} - Estoque: {produto.quantidade_estoque} {produto.unidade}
-                                  </option>
-                                ))
-                              }
-                            </select>
+                            <div className="relative" ref={(el) => { dropdownRefs.current[index] = el }}>
+                              {/* Produto já selecionado */}
+                              {itemVinculos[index] ? (
+                                <div className="flex items-center gap-2">
+                                  <div className="input w-full text-sm flex items-center justify-between">
+                                    <span className="truncate">
+                                      {(() => {
+                                        const p = produtos.find(pr => pr.id === itemVinculos[index])
+                                        return p ? `${p.codigo ? `[${p.codigo}] ` : ''}${p.nome} - Estoque: ${p.quantidade_estoque} ${p.unidade}` : ''
+                                      })()}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setItemVinculos(prev => {
+                                          const newState = { ...prev }
+                                          delete newState[index]
+                                          return newState
+                                        })
+                                        setBuscaProdutoVincular(prev => ({ ...prev, [index]: '' }))
+                                        setDropdownAberto(index)
+                                      }}
+                                      className="text-dark-400 hover:text-red-400 ml-2 flex-shrink-0"
+                                      title="Remover vínculo"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  {/* Campo de busca */}
+                                  <div className="relative">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+                                    <input
+                                      type="text"
+                                      value={buscaProdutoVincular[index] || ''}
+                                      onChange={(e) => {
+                                        setBuscaProdutoVincular(prev => ({ ...prev, [index]: e.target.value }))
+                                        setDropdownAberto(index)
+                                      }}
+                                      onFocus={() => setDropdownAberto(index)}
+                                      placeholder="Digite para buscar produto..."
+                                      className="input w-full text-sm pl-9"
+                                      autoComplete="off"
+                                    />
+                                  </div>
+
+                                  {/* Dropdown de resultados */}
+                                  {dropdownAberto === index && (
+                                    <div className="absolute z-50 w-full mt-1 bg-dark-700 border border-dark-500 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+                                      {(() => {
+                                        const termo = (buscaProdutoVincular[index] || '').toLowerCase().trim()
+                                        const filtrados = produtos
+                                          .filter(p => p.ativo !== false)
+                                          .filter(p => {
+                                            if (!termo) return true
+                                            const nomeMatch = p.nome.toLowerCase().includes(termo)
+                                            const codigoMatch = p.codigo?.toLowerCase().includes(termo)
+                                            return nomeMatch || codigoMatch
+                                          })
+                                          .sort((a, b) => a.nome.localeCompare(b.nome))
+                                        
+                                        if (filtrados.length === 0) {
+                                          return (
+                                            <div className="px-3 py-4 text-dark-400 text-sm text-center">
+                                              Nenhum produto encontrado
+                                            </div>
+                                          )
+                                        }
+                                        
+                                        return filtrados.map(produto => (
+                                          <button
+                                            key={produto.id}
+                                            type="button"
+                                            onClick={() => {
+                                              setItemVinculos(prev => ({ ...prev, [index]: produto.id }))
+                                              setDropdownAberto(null)
+                                              setBuscaProdutoVincular(prev => ({ ...prev, [index]: '' }))
+                                            }}
+                                            className="w-full text-left px-3 py-2.5 text-sm hover:bg-dark-600 transition-colors border-b border-dark-600 last:border-0 flex flex-col gap-0.5"
+                                          >
+                                            <span className="text-white font-medium truncate">
+                                              {produto.codigo ? `[${produto.codigo}] ` : ''}{produto.nome}
+                                            </span>
+                                            <span className="text-dark-300 text-xs">
+                                              Estoque: {produto.quantidade_estoque} {produto.unidade} | Custo: {formatCurrency(produto.valor_custo)}
+                                            </span>
+                                          </button>
+                                        ))
+                                      })()}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+
                             {!itemVinculos[index] && (
                               <p className="text-yellow-400 text-xs mt-1">
                                 ⚠️ Selecione um produto para continuar
