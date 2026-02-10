@@ -88,8 +88,7 @@ export default function NotasFiscaisPage() {
   const [selectedNotaSaida, setSelectedNotaSaida] = useState<NotaFiscalSaida | null>(null)
 
   // Opções para itens
-  const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'vincular' | 'ignorar'>>({})
-  const [itemSubstituicao, setItemSubstituicao] = useState<Record<number, number>>({})
+  const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'ignorar'>>({})
 
   // Seleção e exclusão em massa
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -325,24 +324,6 @@ export default function NotasFiscaisPage() {
   const handleImportNF = async () => {
     if (!xmlData) return
 
-    // Validar se todos os itens com vinculação têm um produto selecionado
-    for (let i = 0; i < xmlData.itens.length; i++) {
-      const item = xmlData.itens[i]
-      const acao = itemOptions[i]
-      
-      // Se escolheu "substituir" (novo → existente) e não tem produto selecionado
-      if (acao === 'substituir' && item.acao !== 'existente' && !itemSubstituicao[i]) {
-        alert(`Por favor, selecione um produto existente para vincular ao item "${item.descricao}" ou escolha "Cadastrar novo produto".`)
-        return
-      }
-      
-      // Se escolheu "vincular" (existente → outro produto) e não selecionou
-      if (acao === 'vincular' && !itemSubstituicao[i]) {
-        alert(`Por favor, selecione o produto para vincular ao item "${item.descricao}" ou escolha "Atualizar estoque".`)
-        return
-      }
-    }
-
     setImporting(true)
     try {
       // 1. Verificar/Criar fornecedor
@@ -393,39 +374,19 @@ export default function NotasFiscaisPage() {
             observacao: `Entrada via XML - NF ${xmlData.numero}`
           })
         } else if (acao === 'substituir') {
-          // Usar produto existente (detectado automaticamente ou selecionado manualmente)
-          const produtoParaAtualizar = itemSubstituicao[i] || item.produto_id
-          
-          if (produtoParaAtualizar) {
-            produtoId = produtoParaAtualizar
+          // Usar produto existente
+          if (item.produto_id) {
+            produtoId = item.produto_id
             
             // Atualizar estoque do produto existente
             await createMovimentacaoEstoque({
-              produto_id: produtoParaAtualizar,
+              produto_id: item.produto_id,
               tipo: 'entrada',
               quantidade: item.quantidade,
               valor_unitario: item.valor_unitario,
               valor_total: item.valor_total,
               motivo: `NF ${xmlData.numero}`,
               observacao: `Entrada via XML - NF ${xmlData.numero}`
-            })
-          }
-        } else if (acao === 'vincular') {
-          // Produto existente sendo vinculado a OUTRO produto
-          const produtoSelecionado = itemSubstituicao[i]
-          
-          if (produtoSelecionado) {
-            produtoId = produtoSelecionado
-            
-            // Atualizar estoque do produto selecionado
-            await createMovimentacaoEstoque({
-              produto_id: produtoSelecionado,
-              tipo: 'entrada',
-              quantidade: item.quantidade,
-              valor_unitario: item.valor_unitario,
-              valor_total: item.valor_total,
-              motivo: `NF ${xmlData.numero}`,
-              observacao: `Entrada via XML - NF ${xmlData.numero} (vinculado manualmente)`
             })
           }
         }
@@ -442,7 +403,7 @@ export default function NotasFiscaisPage() {
           valor_unitario: item.valor_unitario,
           valor_total: item.valor_total,
           valor_desconto: item.valor_desconto,
-          acao: acao === 'cadastrar' ? 'cadastrado' : (acao === 'substituir' || acao === 'vincular') ? 'existente' : 'ignorado'
+          acao: acao === 'cadastrar' ? 'cadastrado' : acao === 'substituir' ? 'existente' : 'ignorado'
         })
       }
 
@@ -1123,100 +1084,38 @@ export default function NotasFiscaisPage() {
                       </div>
                     </div>
                     
-                    <div className="flex flex-col gap-3 mt-3 pt-3 border-t border-dark-600">
-                      <div className="flex items-center gap-3">
-                        {item.acao === 'existente' || itemSubstituicao[index] ? (
+                    <div className="flex items-center gap-3 mt-3 pt-3 border-t border-dark-600">
+                      {item.acao === 'existente' ? (
+                        <>
+                          <Badge variant="success">Produto existente</Badge>
+                          <span className="text-dark-400 text-sm">
+                            → {item.produtoExistente?.nome}
+                          </span>
+                        </>
+                      ) : (
+                        <Badge variant="warning">Novo produto</Badge>
+                      )}
+                      
+                      <select
+                        value={itemOptions[index] || 'cadastrar'}
+                        onChange={(e) => {
+                          const value = e.target.value as 'cadastrar' | 'substituir' | 'ignorar'
+                          setItemOptions(prev => ({ ...prev, [index]: value }))
+                        }}
+                        className="input text-sm ml-auto"
+                      >
+                        {item.acao === 'existente' ? (
                           <>
-                            <Badge variant="success">Produto existente</Badge>
-                            <span className="text-dark-400 text-sm">
-                              → {itemSubstituicao[index] 
-                                  ? produtos.find(p => p.id === itemSubstituicao[index])?.nome 
-                                  : item.produtoExistente?.nome}
-                            </span>
+                            <option value="substituir">Atualizar estoque</option>
+                            <option value="ignorar">Ignorar</option>
                           </>
                         ) : (
-                          <Badge variant="warning">Novo produto</Badge>
+                          <>
+                            <option value="cadastrar">Cadastrar novo produto</option>
+                            <option value="ignorar">Ignorar</option>
+                          </>
                         )}
-                        
-                        <select
-                          value={itemOptions[index] || 'cadastrar'}
-                          onChange={(e) => {
-                            const value = e.target.value as 'cadastrar' | 'substituir' | 'vincular' | 'ignorar'
-                            setItemOptions(prev => ({ ...prev, [index]: value }))
-                            // Limpar substituição se mudar para cadastrar ou atualizar estoque original
-                            if (value === 'cadastrar' || value === 'substituir') {
-                              setItemSubstituicao(prev => {
-                                const newState = { ...prev }
-                                delete newState[index]
-                                return newState
-                              })
-                            }
-                          }}
-                          className="input text-sm ml-auto"
-                        >
-                          {item.acao === 'existente' ? (
-                            <>
-                              <option value="substituir">Atualizar estoque</option>
-                              <option value="vincular">Vincular a outro produto</option>
-                              <option value="ignorar">Ignorar</option>
-                            </>
-                          ) : (
-                            <>
-                              <option value="cadastrar">Cadastrar novo produto</option>
-                              <option value="substituir">Vincular a existente</option>
-                              <option value="ignorar">Ignorar</option>
-                            </>
-                          )}
-                        </select>
-                      </div>
-                      
-                      {/* Seletor de produto existente quando escolher "Vincular" */}
-                      {((item.acao !== 'existente' && itemOptions[index] === 'substituir') || (item.acao === 'existente' && itemOptions[index] === 'vincular')) && (
-                        <div className="bg-dark-700 p-3 rounded-lg">
-                          <label className="text-dark-300 text-sm block mb-2">
-                            {item.acao === 'existente' 
-                              ? 'Selecione outro produto para vincular (substituir o detectado):' 
-                              : 'Selecione o produto existente para vincular:'}
-                          </label>
-                          <select
-                            value={itemSubstituicao[index] || ''}
-                            onChange={(e) => {
-                              const produtoId = parseInt(e.target.value)
-                              if (produtoId) {
-                                setItemSubstituicao(prev => ({ ...prev, [index]: produtoId }))
-                              } else {
-                                setItemSubstituicao(prev => {
-                                  const newState = { ...prev }
-                                  delete newState[index]
-                                  return newState
-                                })
-                              }
-                            }}
-                            className="input w-full"
-                          >
-                            <option value="">-- Selecione um produto --</option>
-                            {produtos
-                              .filter(p => p.ativo !== false)
-                              .sort((a, b) => a.nome.localeCompare(b.nome))
-                              .map(produto => (
-                                <option key={produto.id} value={produto.id}>
-                                  {produto.codigo ? `[${produto.codigo}] ` : ''}{produto.nome} - Estoque: {produto.quantidade_estoque} {produto.unidade}
-                                </option>
-                              ))
-                            }
-                          </select>
-                          {itemSubstituicao[index] && (
-                            <p className="text-green-400 text-sm mt-2">
-                              ✓ O estoque deste produto será atualizado com a entrada da NF
-                            </p>
-                          )}
-                          {!itemSubstituicao[index] && (
-                            <p className="text-yellow-400 text-sm mt-2">
-                              ⚠️ Selecione um produto para continuar
-                            </p>
-                          )}
-                        </div>
-                      )}
+                      </select>
                     </div>
                   </div>
                 ))}

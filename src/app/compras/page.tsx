@@ -22,6 +22,7 @@ import {
   fetchNotaFiscalByChave, findProdutoExistente, fetchItensNotaEntrada
 } from '@/lib/database'
 import { formatCurrency, formatDate, normalizeUnidade } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
 
 interface ProdutoNF {
   codigo: string
@@ -132,6 +133,10 @@ export default function ComprasPage() {
   // Status dos produtos do XML (existente ou novo)
   const [produtosStatus, setProdutosStatus] = useState<Map<number, { existente: boolean; produtoDb?: Produto }>>(new Map())
   const [verificandoProdutos, setVerificandoProdutos] = useState(false)
+  
+  // Ações por produto e vínculos manuais
+  const [itemAcoes, setItemAcoes] = useState<Record<number, 'auto' | 'vincular' | 'cadastrar' | 'ignorar'>>({})
+  const [itemVinculos, setItemVinculos] = useState<Record<number, number>>({})
   
   // Modal para ver produtos de uma nota já importada
   const [showProdutosNotaModal, setShowProdutosNotaModal] = useState(false)
@@ -361,6 +366,15 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
   const processarImportacao = async () => {
     if (!dadosNF) return
     
+    // Validar se todos os itens com "vincular" têm um produto selecionado
+    for (let i = 0; i < dadosNF.produtos.length; i++) {
+      const acaoItem = itemAcoes[i] || 'auto'
+      if (acaoItem === 'vincular' && !itemVinculos[i]) {
+        alert(`Por favor, selecione um produto existente para vincular ao item "${dadosNF.produtos[i].descricao}" ou escolha outra opção.`)
+        return
+      }
+    }
+    
     setProcessing(true)
     
     try {
@@ -414,10 +428,19 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
         status: 'processada'
       })
 
-      // 3. Processar cada produto (AUTOMÁTICO: cria ou atualiza)
-      const resultados: { descricao: string; acao: 'criado' | 'atualizado' }[] = []
+      // 3. Processar cada produto (respeitando ações manuais)
+      const resultados: { descricao: string; acao: 'criado' | 'atualizado' | 'vinculado' | 'ignorado' }[] = []
       
-      for (const prod of dadosNF.produtos) {
+      for (let idx = 0; idx < dadosNF.produtos.length; idx++) {
+        const prod = dadosNF.produtos[idx]
+        const acaoItem = itemAcoes[idx] || 'auto'
+        
+        // Se ignorar, não processar
+        if (acaoItem === 'ignorar') {
+          resultados.push({ descricao: prod.descricao, acao: 'ignorado' })
+          continue
+        }
+        
         // Converter para ItemNFImportacao
         const itemNF: ItemNFImportacao = {
           codigo: prod.codigo,
@@ -431,19 +454,82 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
           gtin: prod.gtin
         }
         
-        // Upsert automático: encontra existente ou cria novo
-        const resultado = await upsertProdutoPorImportacao(
-          itemNF, 
-          atualizarFormadorPreco, 
-          fornecedorId
-        )
+        let produtoId: number
+        let acaoResultado: 'criado' | 'atualizado' | 'vinculado'
         
-        resultados.push({ descricao: prod.descricao, acao: resultado.acao })
+        if (acaoItem === 'vincular' && itemVinculos[idx]) {
+          // Vínculo manual: atualizar o produto selecionado pelo usuário
+          const produtoSelecionado = itemVinculos[idx]
+          const novoCusto = prod.valorUnitario
+          
+          // Atualizar custo do produto vinculado
+          const updateData: any = {
+            valor_custo: novoCusto,
+            custo_ultima_compra: novoCusto,
+            custo_medio: novoCusto,
+            updated_at: new Date().toISOString()
+          }
+          
+          if (atualizarFormadorPreco) {
+            // Buscar margem do produto para recalcular venda
+            const prodDb = produtos.find(p => p.id === produtoSelecionado)
+            if (prodDb?.margem_lucro && prodDb.margem_lucro > 0) {
+              updateData.valor_venda = novoCusto * (1 + prodDb.margem_lucro / 100)
+            }
+          }
+          
+          const { error } = await supabase
+            .from('produtos')
+            .update(updateData)
+            .eq('id', produtoSelecionado)
+          
+          if (error) throw new Error(`Erro ao atualizar produto vinculado: ${error.message}`)
+          
+          produtoId = produtoSelecionado
+          acaoResultado = 'vinculado'
+        } else if (acaoItem === 'cadastrar') {
+          // Forçar criação de novo produto (ignorar existência)
+          const novoCusto = prod.valorUnitario
+          const { data: created, error } = await supabase
+            .from('produtos')
+            .insert([{
+              codigo: prod.codigo || null,
+              nome: prod.descricao,
+              ncm: prod.ncm || null,
+              cfop: prod.cfop || null,
+              unidade: prod.unidade,
+              valor_custo: novoCusto,
+              valor_venda: novoCusto,
+              custo_medio: novoCusto,
+              custo_ultima_compra: novoCusto,
+              margem_lucro: 0,
+              quantidade_estoque: 0,
+              fornecedor_id: fornecedorId,
+              ativo: true
+            }])
+            .select()
+            .single()
+          
+          if (error) throw new Error(`Erro ao criar produto: ${error.message}`)
+          produtoId = created.id
+          acaoResultado = 'criado'
+        } else {
+          // Auto: upsert automático (comportamento original)
+          const resultado = await upsertProdutoPorImportacao(
+            itemNF, 
+            atualizarFormadorPreco, 
+            fornecedorId
+          )
+          produtoId = resultado.produtoId
+          acaoResultado = resultado.acao === 'criado' ? 'criado' : 'atualizado'
+        }
+        
+        resultados.push({ descricao: prod.descricao, acao: acaoResultado })
         
         // Criar item da nota
         await createItemNotaEntrada({
           nota_fiscal_id: nota.id,
-          produto_id: resultado.produtoId,
+          produto_id: produtoId,
           codigo_produto_nf: prod.codigo,
           descricao: prod.descricao,
           ncm: prod.ncm,
@@ -453,24 +539,21 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
           valor_unitario: prod.valorUnitario,
           valor_total: prod.valorTotal,
           valor_desconto: 0,
-          acao: resultado.acao === 'criado' ? 'cadastrado' : 'existente'
+          acao: acaoResultado === 'criado' ? 'cadastrado' : 'existente'
         })
 
-        // Lançar movimentação de estoque (o trigger do banco automaticamente incrementa o estoque)
+        // Lançar movimentação de estoque
         if (lancarEstoque) {
           await createMovimentacaoEstoque({
-            produto_id: resultado.produtoId,
+            produto_id: produtoId,
             tipo: 'entrada',
             quantidade: prod.quantidade,
             valor_unitario: prod.valorUnitario,
             valor_total: prod.valorTotal,
             nota_fiscal_id: nota.id,
-            motivo: `Entrada NF ${dadosNF.numero}`,
+            motivo: `Entrada NF ${dadosNF.numero}${acaoResultado === 'vinculado' ? ' (vinculado manualmente)' : ''}`,
             data_movimentacao: new Date().toISOString()
           })
-          // NOTA: Não chamar incrementarEstoqueProduto aqui!
-          // O trigger "trigger_atualizar_estoque" no banco já faz isso automaticamente
-          // quando uma movimentação é inserida na tabela movimentacoes_estoque
         }
       }
 
@@ -651,6 +734,8 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
     setPendingNFData(null)
     setProdutosStatus(new Map())
     setVerificandoProdutos(false)
+    setItemAcoes({})
+    setItemVinculos({})
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -1019,18 +1104,25 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                   )}
                 </div>
                 
-                <div className="space-y-2 max-h-96 overflow-y-auto">
+                <div className="space-y-2 max-h-[500px] overflow-y-auto">
                   {dadosNF.produtos.map((prod, index) => {
                     const status = produtosStatus.get(index)
                     const isExistente = status?.existente
                     const produtoDb = status?.produtoDb
+                    const acaoItem = itemAcoes[index] || 'auto'
+                    const produtoVinculado = itemVinculos[index] ? produtos.find(p => p.id === itemVinculos[index]) : null
+                    
+                    // Determinar cor da borda
+                    const borderColor = acaoItem === 'ignorar' 
+                      ? 'border-l-dark-500 opacity-50' 
+                      : acaoItem === 'vincular' && produtoVinculado
+                        ? 'border-l-blue-500'
+                        : isExistente ? 'border-l-green-500' : 'border-l-yellow-500'
                     
                     return (
                       <div 
                         key={index} 
-                        className={`glass-card p-3 border-l-4 ${
-                          isExistente ? 'border-l-green-500' : 'border-l-yellow-500'
-                        }`}
+                        className={`glass-card p-3 border-l-4 ${borderColor}`}
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1">
@@ -1052,8 +1144,8 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                               <span className="text-primary-400 font-medium">Total: {formatCurrency(prod.valorTotal)}</span>
                             </div>
                             
-                            {/* Info do produto existente no sistema */}
-                            {isExistente && produtoDb && (
+                            {/* Info do produto existente no sistema (quando auto e encontrado) */}
+                            {acaoItem === 'auto' && isExistente && produtoDb && (
                               <div className="bg-green-500/10 rounded p-2 text-xs">
                                 <div className="flex items-center gap-2 text-green-400 font-medium mb-1">
                                   <CheckCircle className="w-3 h-3" />
@@ -1076,8 +1168,8 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                               </div>
                             )}
                             
-                            {/* Info de produto novo */}
-                            {!isExistente && !verificandoProdutos && (
+                            {/* Info de produto novo (quando auto e não encontrado) */}
+                            {acaoItem === 'auto' && !isExistente && !verificandoProdutos && (
                               <div className="bg-yellow-500/10 rounded p-2 text-xs">
                                 <div className="flex items-center gap-2 text-yellow-400 font-medium">
                                   <AlertTriangle className="w-3 h-3" />
@@ -1085,17 +1177,103 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                                 </div>
                               </div>
                             )}
+                            
+                            {/* Info do produto vinculado manualmente */}
+                            {acaoItem === 'vincular' && produtoVinculado && (
+                              <div className="bg-blue-500/10 rounded p-2 text-xs">
+                                <div className="flex items-center gap-2 text-blue-400 font-medium mb-1">
+                                  <CheckCircle className="w-3 h-3" />
+                                  Vinculado a: {produtoVinculado.nome}
+                                </div>
+                                <div className="grid grid-cols-2 gap-x-4 text-dark-300">
+                                  <span>Estoque atual: <span className="text-white font-medium">{produtoVinculado.quantidade_estoque} {produtoVinculado.unidade}</span></span>
+                                  <span>Custo atual: <span className="text-white">{formatCurrency(produtoVinculado.valor_custo)}</span></span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                           
-                          <div className="flex items-center">
-                            <Badge 
-                              variant={isExistente ? 'success' : 'warning'} 
-                              className="text-xs"
+                          {/* Select de ação */}
+                          <div className="flex flex-col items-end gap-2 min-w-[180px]">
+                            <select
+                              value={acaoItem}
+                              onChange={(e) => {
+                                const value = e.target.value as 'auto' | 'vincular' | 'cadastrar' | 'ignorar'
+                                setItemAcoes(prev => ({ ...prev, [index]: value }))
+                                // Limpar vínculo se não for vincular
+                                if (value !== 'vincular') {
+                                  setItemVinculos(prev => {
+                                    const newState = { ...prev }
+                                    delete newState[index]
+                                    return newState
+                                  })
+                                }
+                              }}
+                              className="input text-xs w-full"
                             >
-                              {isExistente ? 'Atualizar' : 'Criar'}
-                            </Badge>
+                              {isExistente ? (
+                                <>
+                                  <option value="auto">Atualizar estoque</option>
+                                  <option value="vincular">Vincular a outro produto</option>
+                                  <option value="cadastrar">Cadastrar como novo</option>
+                                  <option value="ignorar">Ignorar</option>
+                                </>
+                              ) : (
+                                <>
+                                  <option value="auto">Cadastrar novo produto</option>
+                                  <option value="vincular">Vincular a existente</option>
+                                  <option value="ignorar">Ignorar</option>
+                                </>
+                              )}
+                            </select>
                           </div>
                         </div>
+                        
+                        {/* Seletor de produto quando "Vincular" */}
+                        {acaoItem === 'vincular' && (
+                          <div className="mt-3 pt-3 border-t border-dark-600">
+                            <label className="text-dark-300 text-xs block mb-2">
+                              Selecione o produto existente para vincular:
+                            </label>
+                            <select
+                              value={itemVinculos[index] || ''}
+                              onChange={(e) => {
+                                const produtoId = parseInt(e.target.value)
+                                if (produtoId) {
+                                  setItemVinculos(prev => ({ ...prev, [index]: produtoId }))
+                                } else {
+                                  setItemVinculos(prev => {
+                                    const newState = { ...prev }
+                                    delete newState[index]
+                                    return newState
+                                  })
+                                }
+                              }}
+                              className="input w-full text-sm"
+                            >
+                              <option value="">-- Selecione um produto --</option>
+                              {produtos
+                                .filter(p => p.ativo !== false)
+                                .sort((a, b) => a.nome.localeCompare(b.nome))
+                                .map(produto => (
+                                  <option key={produto.id} value={produto.id}>
+                                    {produto.codigo ? `[${produto.codigo}] ` : ''}{produto.nome} - Estoque: {produto.quantidade_estoque} {produto.unidade}
+                                  </option>
+                                ))
+                              }
+                            </select>
+                            {!itemVinculos[index] && (
+                              <p className="text-yellow-400 text-xs mt-1">
+                                ⚠️ Selecione um produto para continuar
+                              </p>
+                            )}
+                            {itemVinculos[index] && (
+                              <p className="text-green-400 text-xs mt-1">
+                                ✓ O estoque deste produto será atualizado com a entrada da NF
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )
                   })}
@@ -1106,7 +1284,21 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
                 <Button variant="secondary" onClick={() => setStep('upload')}>
                   Voltar
                 </Button>
-                <Button onClick={() => setStep('pagamento')} disabled={verificandoProdutos}>
+                <Button 
+                  onClick={() => {
+                    // Validar vínculos antes de avançar
+                    if (dadosNF) {
+                      for (let i = 0; i < dadosNF.produtos.length; i++) {
+                        if (itemAcoes[i] === 'vincular' && !itemVinculos[i]) {
+                          alert(`Selecione um produto para vincular ao item "${dadosNF.produtos[i].descricao}" ou escolha outra opção.`)
+                          return
+                        }
+                      }
+                    }
+                    setStep('pagamento')
+                  }} 
+                  disabled={verificandoProdutos}
+                >
                   Próximo
                 </Button>
               </div>
