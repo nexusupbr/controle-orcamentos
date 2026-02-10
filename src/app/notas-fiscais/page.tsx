@@ -505,7 +505,7 @@ export default function NotasFiscaisPage() {
 
   // KPIs - Saída
   const totalNotasSaida = notasSaida.length
-  const notasSaidaAutorizadas = notasSaida.filter(n => n.status === 'autorizado' || n.status === 'autorizada')
+  const notasSaidaAutorizadas = notasSaida.filter(n => n.status === 'autorizado' || (n.status as string) === 'autorizada')
   const valorTotalSaida = notasSaidaAutorizadas.reduce((acc, n) => acc + (n.valor_total || 0), 0)
   const notasSaidaHoje = notasSaida.filter(n => {
     const dataEmissao = n.emitida_em || n.created_at
@@ -561,7 +561,7 @@ export default function NotasFiscaisPage() {
   // Excluir NF de Saída
   const handleDeleteNotaSaida = async (nota: NotaFiscalSaida) => {
     // Verificar se é autorizada
-    if (nota.status === 'autorizado' || nota.status === 'autorizada') {
+    if (nota.status === 'autorizado' || (nota.status as string) === 'autorizada') {
       alert('⚠️ Não é possível excluir uma nota fiscal já autorizada pela SEFAZ.\n\nUse a opção de cancelamento na tela de Vendas.')
       return
     }
