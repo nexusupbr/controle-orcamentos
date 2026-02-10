@@ -641,26 +641,8 @@ function round2(value: number): number {
  * 3. Nome exato (ilike)
  */
 export async function findProdutoExistente(item: ItemNFImportacao): Promise<Produto | null> {
-  const nomeNormalizado = item.descricao?.trim().toLowerCase() || ''
-  
-  // Função auxiliar: verifica se os nomes são similares o suficiente
-  const nomesSimilares = (nomeA: string, nomeB: string): boolean => {
-    const a = nomeA.toLowerCase().trim()
-    const b = nomeB.toLowerCase().trim()
-    // Match exato
-    if (a === b) return true
-    // Um contém o outro
-    if (a.includes(b) || b.includes(a)) return true
-    // Pelo menos 60% das palavras significativas em comum
-    const palavrasA = a.split(/[\s\-\/,]+/).filter(p => p.length > 2)
-    const palavrasB = b.split(/[\s\-\/,]+/).filter(p => p.length > 2)
-    if (palavrasA.length === 0 || palavrasB.length === 0) return false
-    const comuns = palavrasA.filter(p => palavrasB.some(pb => pb.includes(p) || p.includes(pb)))
-    return comuns.length >= Math.min(palavrasA.length, palavrasB.length) * 0.6
-  }
-
-  // 1. Tentar por nome exato (case-insensitive) - MAIOR PRIORIDADE
-  if (nomeNormalizado) {
+  // Match APENAS por nome exato (case-insensitive)
+  if (item.descricao && item.descricao.trim()) {
     const { data: byNome } = await supabase
       .from('produtos')
       .select('*')
@@ -669,48 +651,8 @@ export async function findProdutoExistente(item: ItemNFImportacao): Promise<Prod
       .single()
     
     if (byNome) {
-      console.log('[findProdutoExistente] Encontrado por nome:', byNome.nome)
+      console.log('[findProdutoExistente] Encontrado por nome exato:', byNome.nome)
       return byNome
-    }
-  }
-
-  // 2. Tentar por GTIN/EAN (se fornecido e válido) + validação de nome
-  if (item.gtin && item.gtin.length > 3 && !/^0+$/.test(item.gtin)) {
-    const { data: byGtin } = await supabase
-      .from('produtos')
-      .select('*')
-      .or(`gtin_ean.eq.${item.gtin},codigo_barras.eq.${item.gtin}`)
-      .limit(1)
-      .single()
-    
-    if (byGtin) {
-      // Verificar se o nome é similar para evitar falso positivo
-      if (nomesSimilares(byGtin.nome, item.descricao || '')) {
-        console.log('[findProdutoExistente] Encontrado por GTIN + nome similar:', byGtin.nome)
-        return byGtin
-      } else {
-        console.log('[findProdutoExistente] GTIN encontrou', byGtin.nome, 'mas nome não bate com', item.descricao, '- IGNORANDO')
-      }
-    }
-  }
-
-  // 3. Tentar por código interno + validação de nome
-  if (item.codigo && item.codigo.trim()) {
-    const { data: byCodigo } = await supabase
-      .from('produtos')
-      .select('*')
-      .eq('codigo', item.codigo.trim())
-      .limit(1)
-      .single()
-    
-    if (byCodigo) {
-      // Verificar se o nome é similar para evitar falso positivo
-      if (nomesSimilares(byCodigo.nome, item.descricao || '')) {
-        console.log('[findProdutoExistente] Encontrado por código + nome similar:', byCodigo.nome)
-        return byCodigo
-      } else {
-        console.log('[findProdutoExistente] Código encontrou', byCodigo.nome, 'mas nome não bate com', item.descricao, '- IGNORANDO')
-      }
     }
   }
 
