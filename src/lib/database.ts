@@ -2225,76 +2225,79 @@ export interface ParDuplicado {
  */
 export async function detectarDuplicadosExistentes(limite: number = 50): Promise<ParDuplicado[]> {
   try {
-    // Buscar lançamentos COM NF (provavelmente do XML)
-    const { data: lancamentosComNF, error: error1 } = await supabase
+    // Buscar TODOS os lançamentos (não só despesas) que não são subordinados de grupo
+    const { data: todosLancamentos, error: errorTodos } = await supabase
       .from('lancamentos_financeiros')
       .select(`
         *,
         categoria:categorias_financeiras(id, nome, tipo),
         conta:contas_bancarias(id, nome)
       `)
-      .eq('com_nota_fiscal', true)
-      .in('tipo', ['despesa', 'saida'])
-      .order('data_lancamento', { ascending: false })
-      .limit(200)
-    
-    if (error1 || !lancamentosComNF) {
-      console.error('Erro ao buscar lançamentos com NF:', error1)
-      return []
-    }
-    
-    // Buscar lançamentos SEM NF (provavelmente do OFX)
-    const { data: lancamentosSemNF, error: error2 } = await supabase
-      .from('lancamentos_financeiros')
-      .select(`
-        *,
-        categoria:categorias_financeiras(id, nome, tipo),
-        conta:contas_bancarias(id, nome)
-      `)
-      .eq('com_nota_fiscal', false)
-      .in('tipo', ['despesa', 'saida'])
+      .is('grupo_principal_id', null)
       .order('data_lancamento', { ascending: false })
       .limit(500)
     
-    if (error2 || !lancamentosSemNF) {
-      console.error('Erro ao buscar lançamentos sem NF:', error2)
+    if (errorTodos || !todosLancamentos) {
+      console.error('Erro ao buscar lançamentos:', errorTodos)
       return []
     }
     
     const duplicados: ParDuplicado[] = []
     const toleranciaValor = 0.01
+    const idsUsados = new Set<number>()
     
-    // Para cada lançamento com NF, buscar possível duplicado sem NF
-    for (const lancNF of lancamentosComNF) {
-      // Calcular intervalo de datas (±5 dias)
-      const dataNF = new Date(lancNF.data_lancamento)
+    // Comparar todos os lançamentos entre si para encontrar duplicados
+    for (let i = 0; i < todosLancamentos.length; i++) {
+      const lancA = todosLancamentos[i]
+      if (idsUsados.has(lancA.id)) continue
       
-      // Buscar candidatos sem NF
-      for (const lancSemNF of lancamentosSemNF) {
+      for (let j = i + 1; j < todosLancamentos.length; j++) {
+        const lancB = todosLancamentos[j]
+        if (idsUsados.has(lancB.id)) continue
+        
+        // Mesmo tipo normalizado
+        const tipoA = (lancA.tipo === 'entrada' || lancA.tipo === 'receita') ? 'entrada' : 'saida'
+        const tipoB = (lancB.tipo === 'entrada' || lancB.tipo === 'receita') ? 'entrada' : 'saida'
+        if (tipoA !== tipoB) continue
+        
         // Verificar valor (com tolerância)
-        if (Math.abs(lancNF.valor - lancSemNF.valor) > toleranciaValor) continue
+        if (Math.abs(lancA.valor - lancB.valor) > toleranciaValor) continue
         
         // Verificar data (±5 dias)
-        const dataSemNF = new Date(lancSemNF.data_lancamento)
-        const diferencaDias = Math.abs(Math.round((dataNF.getTime() - dataSemNF.getTime()) / (1000 * 60 * 60 * 24)))
+        const dataA = new Date(lancA.data_lancamento)
+        const dataB = new Date(lancB.data_lancamento)
+        const diferencaDias = Math.abs(Math.round((dataA.getTime() - dataB.getTime()) / (1000 * 60 * 60 * 24)))
         if (diferencaDias > 5) continue
         
-        // Calcular similaridade de descrição
-        const tokensNF = extrairTokens(lancNF.descricao || '')
-        const tokensSemNF = extrairTokens(lancSemNF.descricao || '')
-        const score = calcularSimilaridadeJaccard(tokensNF, tokensSemNF)
+        // Verificar se já não estão no mesmo grupo
+        if (lancA.grupo_id && lancA.grupo_id === lancB.grupo_id) continue
         
-        // Se similaridade >= 0.3 (mais baixo para detectar mais candidatos)
-        if (score >= 0.3) {
-          // Verificar se já não estão no mesmo grupo
-          if (lancNF.grupo_id && lancNF.grupo_id === lancSemNF.grupo_id) continue
+        // Calcular similaridade de descrição
+        const tokensA = extrairTokens(lancA.descricao || '')
+        const tokensB = extrairTokens(lancB.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensA, tokensB)
+        
+        // Descrições exatamente iguais OU similaridade >= 0.3
+        const descIguais = (lancA.descricao || '').trim().toLowerCase() === (lancB.descricao || '').trim().toLowerCase()
+        
+        if (score >= 0.3 || descIguais) {
+          // Decidir qual é "com NF" e qual é "sem NF"
+          let lancComNF = lancA
+          let lancSemNF = lancB
+          if (!lancA.com_nota_fiscal && lancB.com_nota_fiscal) {
+            lancComNF = lancB
+            lancSemNF = lancA
+          }
           
           duplicados.push({
-            lancamentoComNF: lancNF as LancamentoFinanceiro,
+            lancamentoComNF: lancComNF as LancamentoFinanceiro,
             lancamentoSemNF: lancSemNF as LancamentoFinanceiro,
-            score,
+            score: descIguais ? 1.0 : score,
             diferencaDias
           })
+          
+          idsUsados.add(lancB.id)
+          break // Passar para o próximo
         }
       }
     }
@@ -2610,6 +2613,111 @@ export async function reconciliarDuplicadosAutomatico(): Promise<{
       }
     }
     
+    // ==================== FASE 2: DEDUPLICAÇÃO GENÉRICA (TODOS OS TIPOS) ====================
+    console.log('\n═══════════════════════════════════════════════════════════')
+    console.log('🔍 FASE 2: DEDUPLICAÇÃO GENÉRICA (TODOS OS TIPOS)')
+    console.log('═══════════════════════════════════════════════════════════')
+    
+    // Buscar TODOS os lançamentos recentes que não são subordinados de grupo
+    const { data: todosLancamentos, error: errorTodos } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id, descricao, valor, data_lancamento, categoria_id, conta_id, com_nota_fiscal, tipo, grupo_id, grupo_principal_id, ofx_fitid, created_at')
+      .is('grupo_principal_id', null)
+      .order('data_lancamento', { ascending: false })
+      .limit(500)
+    
+    if (!errorTodos && todosLancamentos && todosLancamentos.length > 1) {
+      const idsJaProcessados = new Set<number>()
+      
+      for (let i = 0; i < todosLancamentos.length; i++) {
+        const lancA = todosLancamentos[i]
+        if (idsJaProcessados.has(lancA.id)) continue
+        
+        for (let j = i + 1; j < todosLancamentos.length; j++) {
+          const lancB = todosLancamentos[j]
+          if (idsJaProcessados.has(lancB.id)) continue
+          
+          // Mesmo tipo
+          const tipoA = (lancA.tipo === 'entrada' || lancA.tipo === 'receita') ? 'entrada' : 'saida'
+          const tipoB = (lancB.tipo === 'entrada' || lancB.tipo === 'receita') ? 'entrada' : 'saida'
+          if (tipoA !== tipoB) continue
+          
+          // Mesmo valor exato (em centavos)
+          const valorA = Math.round(lancA.valor * 100)
+          const valorB = Math.round(lancB.valor * 100)
+          if (valorA !== valorB) continue
+          
+          // Datas próximas (±3 dias)
+          const dataA = new Date(lancA.data_lancamento)
+          const dataB = new Date(lancB.data_lancamento)
+          const diffDias = Math.abs(Math.round((dataA.getTime() - dataB.getTime()) / (1000 * 60 * 60 * 24)))
+          if (diffDias > 3) continue
+          
+          // Calcular similaridade de descrição
+          const tokensA = extrairTokens(lancA.descricao || '')
+          const tokensB = extrairTokens(lancB.descricao || '')
+          const score = calcularSimilaridadeJaccard(tokensA, tokensB)
+          
+          // Score alto (>= 0.5) para match genérico, OU descrições exatamente iguais
+          const descIguais = (lancA.descricao || '').trim().toLowerCase() === (lancB.descricao || '').trim().toLowerCase()
+          
+          if (score >= 0.5 || descIguais) {
+            console.log(`\n✅ DUPLICADO GENÉRICO ENCONTRADO!`)
+            console.log(`   A: #${lancA.id} | ${lancA.data_lancamento} | R$ ${lancA.valor} | "${lancA.descricao}"`)
+            console.log(`   B: #${lancB.id} | ${lancB.data_lancamento} | R$ ${lancB.valor} | "${lancB.descricao}"`)
+            console.log(`   Score: ${(score*100).toFixed(0)}% | Desc iguais: ${descIguais}`)
+            
+            // Decidir qual manter: preferir o que tem NF, ou o mais antigo, ou o de menor ID
+            let principal = lancA
+            let duplicado = lancB
+            if (!lancA.com_nota_fiscal && lancB.com_nota_fiscal) {
+              principal = lancB
+              duplicado = lancA
+            } else if (lancA.com_nota_fiscal === lancB.com_nota_fiscal) {
+              // Ambos com ou sem NF: manter o mais antigo (menor created_at)
+              if (new Date(lancA.created_at) > new Date(lancB.created_at)) {
+                principal = lancB
+                duplicado = lancA
+              }
+            }
+            
+            // Mesclar: manter principal, enriquecer com dados do duplicado e deletar duplicado
+            const descMesclada = principal.descricao + (duplicado.descricao && duplicado.descricao !== principal.descricao ? ` | Dup: ${duplicado.descricao}` : '')
+            
+            await supabase
+              .from('lancamentos_financeiros')
+              .update({
+                descricao: descMesclada,
+                conta_id: principal.conta_id || duplicado.conta_id,
+                categoria_id: principal.categoria_id || duplicado.categoria_id,
+                ofx_fitid: principal.ofx_fitid || duplicado.ofx_fitid,
+                conciliado: true,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', principal.id)
+            
+            await supabase
+              .from('lancamentos_financeiros')
+              .delete()
+              .eq('id', duplicado.id)
+            
+            idsJaProcessados.add(duplicado.id)
+            
+            resultado.mesclados++
+            resultado.detalhes.push({
+              nfId: principal.id,
+              ofxId: duplicado.id,
+              descricaoNF: principal.descricao,
+              descricaoOFX: duplicado.descricao
+            })
+            
+            console.log(`   ✅ Mantido #${principal.id}, removido #${duplicado.id}`)
+            break // Passar para o próximo lançamento
+          }
+        }
+      }
+    }
+    
     console.log('\n═══════════════════════════════════════════════════════════')
     if (resultado.mesclados > 0) {
       console.log(`✅ RECONCILIAÇÃO CONCLUÍDA: ${resultado.mesclados} par(es) mesclado(s)`)
@@ -2889,7 +2997,61 @@ export async function fetchLancamentosAgrupados(filtros?: {
       resultado.push(lancFormatado)
     }
     
-    return resultado
+    // ==================== DEDUPLICAÇÃO CLIENT-SIDE ====================
+    // Consolida lançamentos com mesma descrição, mesmo valor e datas próximas
+    const deduplicados: LancamentoFinanceiro[] = []
+    const idsVistos = new Set<number>()
+    
+    for (const lanc of resultado) {
+      if (idsVistos.has(lanc.id)) continue
+      
+      // Procurar duplicados deste lançamento
+      const descNorm = (lanc.descricao || '').trim().toLowerCase()
+      const valorCentavos = Math.round((lanc.valor || 0) * 100)
+      const dataLanc = new Date(lanc.data_lancamento)
+      const tipoNorm = (lanc.tipo === 'entrada' || lanc.tipo === 'receita') ? 'entrada' : 'saida'
+      
+      const duplicadosDoItem: LancamentoFinanceiro[] = []
+      
+      for (const outro of resultado) {
+        if (outro.id === lanc.id || idsVistos.has(outro.id)) continue
+        
+        const outroDescNorm = (outro.descricao || '').trim().toLowerCase()
+        const outroValor = Math.round((outro.valor || 0) * 100)
+        const outroData = new Date(outro.data_lancamento)
+        const outroTipo = (outro.tipo === 'entrada' || outro.tipo === 'receita') ? 'entrada' : 'saida'
+        
+        // Mesmo tipo e mesmo valor
+        if (tipoNorm !== outroTipo || valorCentavos !== outroValor) continue
+        
+        // Datas próximas (±3 dias)
+        const diffDias = Math.abs(Math.round((dataLanc.getTime() - outroData.getTime()) / (1000 * 60 * 60 * 24)))
+        if (diffDias > 3) continue
+        
+        // Similaridade de descrição: descrições iguais OU tokens similares (>= 0.5)
+        const tokensA = extrairTokens(lanc.descricao || '')
+        const tokensB = extrairTokens(outro.descricao || '')
+        const score = calcularSimilaridadeJaccard(tokensA, tokensB)
+        const descIguais = descNorm === outroDescNorm
+        
+        if (descIguais || score >= 0.5) {
+          duplicadosDoItem.push(outro)
+          idsVistos.add(outro.id)
+        }
+      }
+      
+      // Se encontrou duplicados, agrupar visualmente
+      if (duplicadosDoItem.length > 0) {
+        lanc.is_grupo_principal = true
+        lanc.grupo_total_itens = 1 + duplicadosDoItem.length
+        lanc.itens_grupo = [...(lanc.itens_grupo || []), ...duplicadosDoItem]
+      }
+      
+      idsVistos.add(lanc.id)
+      deduplicados.push(lanc)
+    }
+    
+    return deduplicados
   } catch (err) {
     console.error('Erro ao buscar lançamentos agrupados:', err)
     return []
