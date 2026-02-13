@@ -110,6 +110,7 @@ const adminNavigationGroups: NavGroup[] = [
     items: [
       { name: 'Geral', href: '/configuracoes', icon: Settings },
       { name: 'Fiscal', href: '/configuracoes/fiscal', icon: Calculator },
+      { name: 'Usuários', href: '/admin/usuarios', icon: Users },
     ]
   },
 ]
@@ -120,7 +121,7 @@ const simpleNavigation: NavItem[] = [
 ]
 
 // Rotas administrativas
-const adminRoutes = ['/admin', '/orcamentos', '/os', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais', '/categorias-financeiras']
+const adminRoutes = ['/admin', '/orcamentos', '/os', '/materiais', '/resumo', '/configuracoes', '/obras', '/estoque', '/compras', '/clientes', '/financeiro', '/caixa', '/relatorios', '/vendas', '/notas-fiscais', '/categorias-financeiras', '/admin/usuarios']
 
 // Componente de grupo de navegação com submenu
 function NavGroupComponent({ 
@@ -423,10 +424,23 @@ export function Sidebar() {
                     <HardHat className="w-5 h-5" />
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-white">Funcionário</p>
-                    <p className="text-xs text-dark-400">Área de Obras</p>
+                    <p className="text-sm font-medium text-white">
+                      {authEnabled && usuario ? usuario.nome : 'Funcionário'}
+                    </p>
+                    <p className="text-xs text-dark-400">
+                      {authEnabled && usuario ? usuario.email : 'Área de Obras'}
+                    </p>
                   </div>
                 </div>
+                {authEnabled && usuario && (
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full mt-3 flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-dark-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span className="text-sm font-medium">Sair</span>
+                  </button>
+                )}
               </div>
             )}
           </div>

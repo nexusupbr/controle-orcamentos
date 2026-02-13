@@ -1,17 +1,29 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { HardHat, Package, Search, Plus, Minus, Save, ChevronDown, ChevronUp } from 'lucide-react'
+import { HardHat, Package, Search, Plus, Minus, Save, ChevronDown, ChevronUp, LogIn, User, Lock, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { LoadingSpinner, EmptyState, Badge } from '@/components/ui/Common'
 import { 
   fetchObrasEmAndamento, fetchMateriais, 
   fetchObraMateriaisComDetalhes, upsertObraMaterial,
-  Obra, Material, ObraMaterial
+  Obra, Material, ObraMaterial, loginUsuario
 } from '@/lib/supabase'
+import { useAuth } from '@/contexts/AuthContext'
+import Image from 'next/image'
+import { getAssetPath } from '@/lib/utils'
 
 export default function FuncionarioPage() {
+  const { usuario, loading: authLoading, authEnabled } = useAuth()
+
+  // Estado do login inline
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginSenha, setLoginSenha] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loginLoading, setLoginLoading] = useState(false)
+  const { login } = useAuth()
+
   const [obras, setObras] = useState<Obra[]>([])
   const [materiais, setMateriais] = useState<Material[]>([])
   const [loading, setLoading] = useState(true)
@@ -26,9 +38,30 @@ export default function FuncionarioPage() {
   const [saving, setSaving] = useState(false)
   const [quantidades, setQuantidades] = useState<Record<number, number>>({})
 
+  const isLoggedIn = authEnabled && usuario !== null
+
   useEffect(() => {
-    loadData()
-  }, [])
+    if (isLoggedIn) {
+      loadData()
+    }
+  }, [isLoggedIn])
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoginError('')
+    setLoginLoading(true)
+
+    try {
+      const success = await login(loginEmail, loginSenha)
+      if (!success) {
+        setLoginError('Email ou senha inválidos')
+      }
+    } catch {
+      setLoginError('Erro ao fazer login. Tente novamente.')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -122,6 +155,85 @@ export default function FuncionarioPage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-[60vh]">
+        <LoadingSpinner size="lg" />
+      </div>
+    )
+  }
+
+  // Se não está logado, mostra tela de login
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl overflow-hidden shadow-glow mb-4">
+              <Image
+                src={getAssetPath('/images/logo.jpeg')}
+                alt="Logo"
+                width={80}
+                height={80}
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <h1 className="text-2xl font-bold text-white font-heading">Área do Funcionário</h1>
+            <p className="text-dark-400 mt-1">Faça login para acessar as obras</p>
+          </div>
+
+          {/* Form */}
+          <div className="glass-card p-8">
+            <form onSubmit={handleLogin} className="space-y-6">
+              {loginError && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  {loginError}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" />
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    required
+                    className="input pl-12 w-full"
+                  />
+                </div>
+
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" />
+                  <input
+                    type="password"
+                    placeholder="Senha"
+                    value={loginSenha}
+                    onChange={(e) => setLoginSenha(e.target.value)}
+                    required
+                    className="input pl-12 w-full"
+                  />
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                className="w-full"
+                isLoading={loginLoading}
+                leftIcon={<LogIn className="w-5 h-5" />}
+              >
+                Entrar
+              </Button>
+            </form>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   if (loading) {

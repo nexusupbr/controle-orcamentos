@@ -390,3 +390,48 @@ export async function fetchUsuarios(): Promise<Usuario[]> {
 
   return data || []
 }
+
+export type UsuarioInput = Omit<Usuario, 'id' | 'created_at'>
+
+export async function createUsuario(usuario: UsuarioInput): Promise<Usuario> {
+  const { data, error } = await supabase
+    .from('usuarios')
+    .insert([usuario])
+    .select()
+    .single()
+
+  if (error) {
+    console.error('Erro ao criar usuário:', error)
+    throw new Error(error.message)
+  }
+
+  return data
+}
+
+export async function updateUsuario(id: number, updates: Partial<UsuarioInput>): Promise<Usuario> {
+  const { data, error } = await supabase
+    .from('usuarios')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) {
+    console.error('Erro ao atualizar usuário:', error)
+    throw new Error(error.message)
+  }
+
+  return data
+}
+
+export async function deleteUsuario(id: number): Promise<void> {
+  const { error } = await supabase
+    .from('usuarios')
+    .delete()
+    .eq('id', id)
+
+  if (error) {
+    console.error('Erro ao excluir usuário:', error)
+    throw new Error(error.message)
+  }
+}
