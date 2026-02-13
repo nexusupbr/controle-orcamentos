@@ -155,8 +155,29 @@ export default function FinanceiroPage() {
       setContasBancarias(contas)
       setCategorias(cats)
       setLancamentos(lancs)
-      setFornecedores(forns)
       setClientes(clis)
+      
+      // Mescla fornecedores da tabela antiga + clientes cadastrados como fornecedor/ambos
+      const clientesFornecedores = clis
+        .filter((c: any) => c.tipo_cadastro === 'fornecedor' || c.tipo_cadastro === 'ambos')
+        .map((c: any) => ({
+          id: c.id,
+          razao_social: c.razao_social || c.nome_fantasia || c.nome || 'Sem nome',
+          cnpj: c.cnpj,
+          _origem: 'clientes' as const
+        }))
+      
+      // IDs dos fornecedores da tabela antiga
+      const fornsComOrigem = forns.map((f: any) => ({ ...f, _origem: 'fornecedores' as const }))
+      
+      // Evita duplicatas por CNPJ (prioriza tabela clientes se existir nas duas)
+      const cnpjsClientes = new Set(clientesFornecedores.map((c: any) => c.cnpj).filter(Boolean))
+      const fornsFiltrados = fornsComOrigem.filter((f: any) => !f.cnpj || !cnpjsClientes.has(f.cnpj))
+      
+      const todosFornecedores = [...clientesFornecedores, ...fornsFiltrados]
+        .sort((a, b) => (a.razao_social || '').localeCompare(b.razao_social || ''))
+      
+      setFornecedores(todosFornecedores)
     } catch (err) {
       console.error('Erro ao carregar dados:', err)
     } finally {
