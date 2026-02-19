@@ -925,6 +925,18 @@ export async function fetchFornecedorByCnpj(cnpj: string): Promise<Fornecedor | 
   return data
 }
 
+export async function fetchFornecedorByCpf(cpf: string): Promise<Fornecedor | null> {
+  const cpfLimpo = cpf.replace(/\D/g, '')
+  const { data, error } = await supabase
+    .from('fornecedores')
+    .select('*')
+    .eq('cpf', cpfLimpo)
+    .single()
+
+  if (error) return null
+  return data
+}
+
 export async function createFornecedor(fornecedor: FornecedorInput): Promise<Fornecedor> {
   if (fornecedor.cnpj) {
     fornecedor.cnpj = fornecedor.cnpj.replace(/\D/g, '')

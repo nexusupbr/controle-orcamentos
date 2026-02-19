@@ -19,7 +19,8 @@ import {
   fetchContasBancarias, createContaBancaria, updateContaBancaria, fetchCategoriasFinanceiras, createCategoriaFinanceira,
   fetchLancamentosFinanceiros, createLancamentoFinanceiro,
   fetchFornecedores, fetchClientes, checkOFXDuplicado,
-  checkOFXDuplicadoAvancado, ResultadoImportacaoOFX
+  checkOFXDuplicadoAvancado, ResultadoImportacaoOFX,
+  createFornecedor, fetchFornecedorByCnpj, fetchFornecedorByCpf
 } from '@/lib/database'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -66,7 +67,9 @@ export default function FinanceiroPage() {
   
   // Forms
   const [formPagar, setFormPagar] = useState({
-    fornecedor_id: null as number | null,
+    // Usa uma chave com origem para evitar colisão de IDs entre tabelas (clientes x fornecedores)
+    // Formato: "fornecedores:123" | "clientes:456" | ""
+    fornecedor_key: '' as string,
     descricao: '',
     valor: 0,
     data_vencimento: '',
@@ -169,10 +172,21 @@ export default function FinanceiroPage() {
       
       // IDs dos fornecedores da tabela antiga
       const fornsComOrigem = forns.map((f: any) => ({ ...f, _origem: 'fornecedores' as const }))
+
+      // Mantém disponíveis no select os fornecedores já vinculados em contas a pagar
+      // (mesmo se houver duplicata por CNPJ na tabela clientes).
+      const fornecedorIdsEmUso = new Set(
+        (pagar || [])
+          .map((c: any) => c?.fornecedor_id)
+          .filter((id: any) => typeof id === 'number')
+      )
       
       // Evita duplicatas por CNPJ (prioriza tabela clientes se existir nas duas)
       const cnpjsClientes = new Set(clientesFornecedores.map((c: any) => c.cnpj).filter(Boolean))
-      const fornsFiltrados = fornsComOrigem.filter((f: any) => !f.cnpj || !cnpjsClientes.has(f.cnpj))
+      const fornsFiltrados = fornsComOrigem.filter((f: any) => {
+        if (fornecedorIdsEmUso.has(f.id)) return true
+        return !f.cnpj || !cnpjsClientes.has(f.cnpj)
+      })
       
       const todosFornecedores = [...clientesFornecedores, ...fornsFiltrados]
         .sort((a, b) => (a.razao_social || '').localeCompare(b.razao_social || ''))
@@ -219,7 +233,7 @@ export default function FinanceiroPage() {
     if (conta) {
       setEditingPagar(conta)
       setFormPagar({
-        fornecedor_id: conta.fornecedor_id,
+        fornecedor_key: conta.fornecedor_id ? `fornecedores:${conta.fornecedor_id}` : '',
         descricao: conta.descricao,
         valor: conta.valor,
         data_vencimento: conta.data_vencimento,
@@ -238,7 +252,7 @@ export default function FinanceiroPage() {
     } else {
       setEditingPagar(null)
       setFormPagar({
-        fornecedor_id: null,
+        fornecedor_key: '',
         descricao: '',
         valor: 0,
         data_vencimento: '',
@@ -258,10 +272,63 @@ export default function FinanceiroPage() {
     setIsPagarModalOpen(true)
   }
 
+  const resolverFornecedorId = async (fornecedorKey: string): Promise<number | null> => {
+    if (!fornecedorKey) return null
+
+    const [origem, idStr] = fornecedorKey.split(':')
+    const id = Number(idStr)
+    if (!origem || !idStr || Number.isNaN(id)) return null
+
+    if (origem === 'fornecedores') return id
+
+    if (origem === 'clientes') {
+      const cliente = clientes.find((c: any) => c.id === id)
+      if (!cliente) throw new Error('Cliente/fornecedor selecionado não encontrado')
+
+      const razaoSocial = cliente.razao_social || cliente.nome_fantasia || cliente.nome || 'Sem nome'
+
+      // 1) Tenta vincular por CNPJ/CPF (se existir)
+      if (cliente.cnpj) {
+        const existente = await fetchFornecedorByCnpj(cliente.cnpj)
+        if (existente?.id) return existente.id
+      }
+      if (cliente.cpf) {
+        const existente = await fetchFornecedorByCpf(cliente.cpf)
+        if (existente?.id) return existente.id
+      }
+
+      // 2) Se não existir, cria um registro em fornecedores para manter FK de contas_pagar
+      const novo = await createFornecedor({
+        razao_social: razaoSocial,
+        nome_fantasia: cliente.nome_fantasia,
+        cnpj: cliente.cnpj,
+        cpf: cliente.cpf,
+        inscricao_estadual: cliente.inscricao_estadual,
+        endereco: cliente.endereco,
+        numero: cliente.numero,
+        complemento: cliente.complemento,
+        bairro: cliente.bairro,
+        cidade: cliente.cidade,
+        estado: cliente.estado,
+        cep: cliente.cep,
+        telefone: cliente.telefone || cliente.celular,
+        email: cliente.email,
+        observacoes: cliente.observacoes,
+        ativo: true
+      })
+
+      return novo.id
+    }
+
+    return null
+  }
+
   const handleSavePagar = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     try {
+      const fornecedorId = await resolverFornecedorId(formPagar.fornecedor_key)
+
       // Se for recorrente, criar múltiplas contas
       if (!editingPagar && formPagar.recorrente && formPagar.meses_recorrentes > 1) {
         const dataBase = new Date(formPagar.data_vencimento)
@@ -276,7 +343,7 @@ export default function FinanceiroPage() {
           const statusValue: 'pendente' | 'pago' | 'vencido' = novaData < new Date() ? 'vencido' : 'pendente'
           
           const data = {
-            fornecedor_id: formPagar.fornecedor_id,
+            fornecedor_id: fornecedorId,
             descricao: formPagar.descricao,
             valor: formPagar.valor,
             data_vencimento: dataVencimentoStr,
@@ -299,7 +366,7 @@ export default function FinanceiroPage() {
                   new Date(formPagar.data_vencimento) < new Date() ? 'vencido' : 'pendente'
         
         const data = {
-          fornecedor_id: formPagar.fornecedor_id,
+          fornecedor_id: fornecedorId,
           descricao: formPagar.descricao,
           valor: formPagar.valor,
           data_vencimento: formPagar.data_vencimento,
@@ -325,7 +392,8 @@ export default function FinanceiroPage() {
       setIsPagarModalOpen(false)
     } catch (err) {
       console.error('Erro ao salvar:', err)
-      alert('Erro ao salvar conta')
+      const msg = err instanceof Error ? err.message : 'Erro desconhecido'
+      alert(`Erro ao salvar conta: ${msg}`)
     } finally {
       setSaving(false)
     }
@@ -1411,13 +1479,15 @@ export default function FinanceiroPage() {
             <div>
               <label className="block text-sm text-dark-300 mb-2">Fornecedor</label>
               <select
-                value={formPagar.fornecedor_id || ''}
-                onChange={(e) => setFormPagar({ ...formPagar, fornecedor_id: e.target.value ? Number(e.target.value) : null })}
+                value={formPagar.fornecedor_key}
+                onChange={(e) => setFormPagar({ ...formPagar, fornecedor_key: e.target.value })}
                 className="input w-full"
               >
                 <option value="">Selecione...</option>
                 {fornecedores.map(f => (
-                  <option key={f.id} value={f.id}>{f.razao_social}</option>
+                  <option key={`${f._origem}:${f.id}`} value={`${f._origem}:${f.id}`}>
+                    {f.razao_social}{f._origem === 'clientes' ? ' (Clientes)' : ''}
+                  </option>
                 ))}
               </select>
             </div>
