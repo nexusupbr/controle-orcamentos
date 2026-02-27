@@ -5,7 +5,7 @@ import {
   Plus, Search, DollarSign, TrendingUp, TrendingDown, Calendar,
   Filter, Download, Upload, CheckCircle, Clock, AlertTriangle,
   FileText, Receipt, Truck, CreditCard, Building, Trash2, AlertCircle,
-  ChevronDown, ChevronRight, Link2, Unlink, Merge, GitMerge
+  ChevronDown, ChevronRight, Link2, Unlink, Merge, GitMerge, Edit2, Save, X
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -16,6 +16,7 @@ import {
 import { 
   LancamentoFinanceiro, CategoriaFinanceira, ContaBancaria, Venda,
   fetchLancamentosFinanceiros, createLancamentoFinanceiro, deleteLancamentoFinanceiro,
+  updateLancamentoFinanceiro,
   verificarExclusaoLancamento,
   fetchCategoriasFinanceiras, fetchContasBancarias,
   fetchVendas, getRelatorioCaixa, checkOFXDuplicado,
@@ -129,6 +130,11 @@ export default function CaixaPage() {
   const [buscandoDuplicados, setBuscandoDuplicados] = useState(false)
   const [processandoDuplicado, setProcessandoDuplicado] = useState<number | null>(null)
   
+  // Edição de categoria inline
+  const [editingCategoriaLancId, setEditingCategoriaLancId] = useState<number | null>(null)
+  const [editingCategoriaValue, setEditingCategoriaValue] = useState<number | null>(null)
+  const [savingCategoria, setSavingCategoria] = useState(false)
+
   // Validação de categorias OFX
   const [attemptedImport, setAttemptedImport] = useState(false)
   const [missingCategoryIds, setMissingCategoryIds] = useState<string[]>([])
@@ -548,6 +554,27 @@ export default function CaixaPage() {
       setDeleteError('Erro ao excluir lançamento: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
     } finally {
       setDeleting(false)
+    }
+  }
+
+  // Alterar categoria de um lançamento
+  const handleSalvarCategoria = async (lancamentoId: number, categoriaId: number | null) => {
+    setSavingCategoria(true)
+    try {
+      await updateLancamentoFinanceiro(lancamentoId, { categoria_id: categoriaId } as any)
+      // Atualiza localmente para feedback imediato
+      setLancamentos(prev => prev.map(l => 
+        l.id === lancamentoId ? { ...l, categoria_id: categoriaId } : l
+      ))
+      if (selectedLancamento?.id === lancamentoId) {
+        setSelectedLancamento(prev => prev ? { ...prev, categoria_id: categoriaId } : null)
+      }
+      setEditingCategoriaLancId(null)
+    } catch (err) {
+      console.error('Erro ao alterar categoria:', err)
+      alert('Erro ao alterar categoria: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setSavingCategoria(false)
     }
   }
 
@@ -1258,18 +1285,61 @@ export default function CaixaPage() {
                             )}
                           </div>
                         </td>
-                        <td>
-                          {lanc.categoria_id ? (
-                            <span 
-                              className="px-2 py-1 rounded text-xs text-white"
-                              style={{ 
-                                backgroundColor: categorias.find(c => c.id === lanc.categoria_id)?.cor || '#3B82F6' 
-                              }}
-                            >
-                              {categorias.find(c => c.id === lanc.categoria_id)?.nome}
-                            </span>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          {editingCategoriaLancId === lanc.id ? (
+                            <div className="flex items-center gap-1">
+                              <select
+                                value={editingCategoriaValue || ''}
+                                onChange={(e) => setEditingCategoriaValue(e.target.value ? Number(e.target.value) : null)}
+                                className="input text-xs py-1 px-2 w-32"
+                                autoFocus
+                              >
+                                <option value="">Sem categoria</option>
+                                {categorias.map(c => (
+                                  <option key={c.id} value={c.id}>{c.nome}</option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => handleSalvarCategoria(lanc.id, editingCategoriaValue)}
+                                disabled={savingCategoria}
+                                className="p-1 rounded hover:bg-green-500/20 text-green-400"
+                                title="Salvar"
+                              >
+                                <Save className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => setEditingCategoriaLancId(null)}
+                                className="p-1 rounded hover:bg-red-500/20 text-red-400"
+                                title="Cancelar"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
                           ) : (
-                            <span className="text-dark-500 text-sm">Sem categoria</span>
+                            <div className="flex items-center gap-1 group/cat">
+                              {lanc.categoria_id ? (
+                                <span 
+                                  className="px-2 py-1 rounded text-xs text-white"
+                                  style={{ 
+                                    backgroundColor: categorias.find(c => c.id === lanc.categoria_id)?.cor || '#3B82F6' 
+                                  }}
+                                >
+                                  {categorias.find(c => c.id === lanc.categoria_id)?.nome}
+                                </span>
+                              ) : (
+                                <span className="text-dark-500 text-sm">Sem categoria</span>
+                              )}
+                              <button
+                                onClick={() => {
+                                  setEditingCategoriaLancId(lanc.id)
+                                  setEditingCategoriaValue(lanc.categoria_id)
+                                }}
+                                className="p-1 rounded opacity-0 group-hover/cat:opacity-100 hover:bg-primary-500/20 text-dark-400 hover:text-primary-400 transition-all"
+                                title="Alterar categoria"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           )}
                         </td>
                         <td className="text-dark-300">
@@ -1445,17 +1515,60 @@ export default function CaixaPage() {
                 </div>
                 <div>
                   <p className="text-dark-400 text-sm">Categoria</p>
-                  {selectedLancamento.categoria_id ? (
-                    <span 
-                      className="px-2 py-1 rounded text-xs text-white inline-block"
-                      style={{ 
-                        backgroundColor: categorias.find(c => c.id === selectedLancamento.categoria_id)?.cor || '#3B82F6' 
-                      }}
-                    >
-                      {categorias.find(c => c.id === selectedLancamento.categoria_id)?.nome}
-                    </span>
+                  {editingCategoriaLancId === selectedLancamento.id ? (
+                    <div className="flex items-center gap-2 mt-1">
+                      <select
+                        value={editingCategoriaValue || ''}
+                        onChange={(e) => setEditingCategoriaValue(e.target.value ? Number(e.target.value) : null)}
+                        className="input text-sm py-1 px-2"
+                        autoFocus
+                      >
+                        <option value="">Sem categoria</option>
+                        {categorias.map(c => (
+                          <option key={c.id} value={c.id}>{c.nome}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleSalvarCategoria(selectedLancamento.id, editingCategoriaValue)}
+                        disabled={savingCategoria}
+                        className="p-1.5 rounded-lg bg-green-500/20 text-green-400 hover:bg-green-500/30"
+                        title="Salvar"
+                      >
+                        <Save className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setEditingCategoriaLancId(null)}
+                        className="p-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                        title="Cancelar"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
                   ) : (
-                    <p className="text-dark-500">Sem categoria</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      {selectedLancamento.categoria_id ? (
+                        <span 
+                          className="px-2 py-1 rounded text-xs text-white inline-block"
+                          style={{ 
+                            backgroundColor: categorias.find(c => c.id === selectedLancamento.categoria_id)?.cor || '#3B82F6' 
+                          }}
+                        >
+                          {categorias.find(c => c.id === selectedLancamento.categoria_id)?.nome}
+                        </span>
+                      ) : (
+                        <span className="text-dark-500">Sem categoria</span>
+                      )}
+                      <button
+                        onClick={() => {
+                          setEditingCategoriaLancId(selectedLancamento.id)
+                          setEditingCategoriaValue(selectedLancamento.categoria_id)
+                        }}
+                        className="p-1.5 rounded-lg text-dark-400 hover:text-primary-400 hover:bg-primary-500/20 transition-colors"
+                        title="Alterar categoria"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
