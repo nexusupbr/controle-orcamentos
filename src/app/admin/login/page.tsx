@@ -31,7 +31,7 @@ export default function AdminLogin() {
     // Simula um pequeno delay para feedback visual
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    if (email === ADMIN_EMAIL && senha === ADMIN_SENHA) {
+    if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && senha === ADMIN_SENHA) {
       // Usa a função login do contexto
       login(email);
       router.push('/admin');
