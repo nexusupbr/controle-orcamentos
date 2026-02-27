@@ -5,7 +5,7 @@ import {
   Plus, Edit2, Trash2, Search, Package, Eye, 
   AlertTriangle, TrendingUp, Filter, Download, 
   ChevronDown, ChevronUp, History, DollarSign,
-  FileUp, Upload, CheckCircle, XCircle
+  FileUp, Upload, CheckCircle, XCircle, Tag, Settings
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input, Select } from '@/components/ui/Form'
@@ -90,6 +90,7 @@ export default function EstoquePage() {
   // Modais
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isCategoriaModalOpen, setIsCategoriaModalOpen] = useState(false)
+  const [isGerenciarCategoriasOpen, setIsGerenciarCategoriasOpen] = useState(false)
   const [isHistoricoModalOpen, setIsHistoricoModalOpen] = useState(false)
   const [isFormadorPrecoOpen, setIsFormadorPrecoOpen] = useState(false)
   const [isImportModalOpen, setIsImportModalOpen] = useState(false)
@@ -192,7 +193,8 @@ export default function EstoquePage() {
     const matchSearch = p.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
       p.codigo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       p.codigo_barras?.includes(searchTerm)
-    const matchCategoria = !filterCategoria || p.categoria_id === Number(filterCategoria)
+    const matchCategoria = !filterCategoria || 
+      (filterCategoria === 'sem_categoria' ? !p.categoria_id : p.categoria_id === Number(filterCategoria))
     const matchClassificacao = !filterClassificacao || p.classificacao_fiscal === filterClassificacao
     return matchSearch && matchCategoria && matchClassificacao
   })
@@ -728,10 +730,10 @@ export default function EstoquePage() {
           </Button>
           <Button
             variant="secondary"
-            onClick={() => openCategoriaModal()}
-            leftIcon={<Plus className="w-4 h-4" />}
+            onClick={() => setIsGerenciarCategoriasOpen(true)}
+            leftIcon={<Settings className="w-4 h-4" />}
           >
-            Nova Categoria
+            Categorias
           </Button>
           <Button
             onClick={() => openModal()}
@@ -819,6 +821,7 @@ export default function EstoquePage() {
             className="input"
           >
             <option value="">Todas as categorias</option>
+            <option value="sem_categoria">Sem Categoria</option>
             {categorias.map(cat => (
               <option key={cat.id} value={cat.id}>{cat.nome}</option>
             ))}
@@ -849,40 +852,7 @@ export default function EstoquePage() {
         )}
       </div>
 
-      {/* Categorias (cards editáveis) */}
-      <div className="glass-card p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-white">Categorias</h3>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {categorias.map(cat => (
-            <div
-              key={cat.id}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-dark-800 group"
-              style={{ borderLeft: `3px solid ${cat.cor}` }}
-            >
-              <span className="text-sm text-white">{cat.nome}</span>
-              <span className="text-xs text-dark-400">
-                ({produtos.filter(p => p.categoria_id === cat.id).length})
-              </span>
-              <div className="hidden group-hover:flex gap-1">
-                <button
-                  onClick={() => openCategoriaModal(cat)}
-                  className="p-1 hover:bg-dark-700 rounded"
-                >
-                  <Edit2 className="w-3 h-3 text-dark-400" />
-                </button>
-                <button
-                  onClick={() => handleDeleteCategoria(cat.id)}
-                  className="p-1 hover:bg-dark-700 rounded"
-                >
-                  <Trash2 className="w-3 h-3 text-red-400" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+
 
       {/* Tabela de Produtos */}
       <div className="glass-card overflow-hidden">
@@ -1283,6 +1253,73 @@ export default function EstoquePage() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Gerenciar Categorias */}
+      <Modal
+        isOpen={isGerenciarCategoriasOpen}
+        onClose={() => setIsGerenciarCategoriasOpen(false)}
+        title="Gerenciar Categorias"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <p className="text-dark-400 text-sm">{categorias.length} categorias cadastradas</p>
+            <Button
+              size="sm"
+              onClick={() => {
+                setIsGerenciarCategoriasOpen(false)
+                openCategoriaModal()
+              }}
+              leftIcon={<Plus className="w-4 h-4" />}
+            >
+              Nova Categoria
+            </Button>
+          </div>
+          <div className="max-h-96 overflow-y-auto space-y-2">
+            {categorias.map(cat => (
+              <div
+                key={cat.id}
+                className="flex items-center justify-between p-3 rounded-lg bg-dark-700/50 hover:bg-dark-700"
+                style={{ borderLeft: `4px solid ${cat.cor}` }}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-4 h-4 rounded-full" style={{ backgroundColor: cat.cor }} />
+                  <div>
+                    <span className="text-white font-medium">{cat.nome}</span>
+                    <span className="text-dark-400 text-sm ml-2">
+                      ({produtos.filter(p => p.categoria_id === cat.id).length} produtos)
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      setIsGerenciarCategoriasOpen(false)
+                      openCategoriaModal(cat)
+                    }}
+                    className="p-2 rounded-lg text-dark-400 hover:text-primary-400 hover:bg-primary-500/10 transition-colors"
+                    title="Editar"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDeleteCategoria(cat.id)}
+                    className="p-2 rounded-lg text-dark-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    title="Excluir"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button variant="secondary" onClick={() => setIsGerenciarCategoriasOpen(false)}>
+              Fechar
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Modal de Categoria */}
