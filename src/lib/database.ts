@@ -3942,6 +3942,76 @@ export async function createVendaComItens(
   return vendaData
 }
 
+// ==================== FUNÇÕES - BAIXA ESTOQUE POR VENDA ====================
+
+/**
+ * Verifica se já foi feita baixa de estoque para uma venda específica
+ */
+export async function verificarBaixaEstoqueVenda(vendaId: number): Promise<boolean> {
+  const { data } = await supabase
+    .from('movimentacoes_estoque')
+    .select('id')
+    .eq('venda_id', vendaId)
+    .eq('tipo', 'saida')
+    .limit(1)
+  
+  return (data?.length || 0) > 0
+}
+
+/**
+ * Baixa estoque dos produtos da venda.
+ * Verifica duplicação para não dar baixa quando NF já gerou saída.
+ */
+export async function baixarEstoqueVenda(vendaId: number, itens: { produto_id: number; quantidade: number; descricao?: string }[]): Promise<{ baixados: number; jaExistentes: number }> {
+  // Verificar se já existe movimentação de saída para esta venda
+  const jaBaixou = await verificarBaixaEstoqueVenda(vendaId)
+  if (jaBaixou) {
+    return { baixados: 0, jaExistentes: itens.length }
+  }
+
+  let baixados = 0
+  
+  for (const item of itens) {
+    if (!item.produto_id) continue
+    
+    try {
+      // Decrementar estoque
+      const { data: produto, error: fetchError } = await supabase
+        .from('produtos')
+        .select('quantidade_estoque')
+        .eq('id', item.produto_id)
+        .single()
+      
+      if (fetchError || !produto) continue
+      
+      const novoEstoque = Math.max(0, (produto.quantidade_estoque || 0) - item.quantidade)
+      
+      await supabase
+        .from('produtos')
+        .update({ quantidade_estoque: novoEstoque, updated_at: new Date().toISOString() })
+        .eq('id', item.produto_id)
+      
+      // Registrar movimentação de estoque
+      await supabase
+        .from('movimentacoes_estoque')
+        .insert([{
+          produto_id: item.produto_id,
+          tipo: 'saida',
+          quantidade: item.quantidade,
+          motivo: `Venda #${vendaId}`,
+          venda_id: vendaId,
+          data_movimentacao: new Date().toISOString()
+        }])
+      
+      baixados++
+    } catch (err) {
+      console.error(`Erro ao baixar estoque do produto ${item.produto_id}:`, err)
+    }
+  }
+
+  return { baixados, jaExistentes: 0 }
+}
+
 // ==================== FUNÇÕES NOTAS FISCAIS COMPLEMENTARES ====================
 
 export async function createNotaFiscalEntrada(

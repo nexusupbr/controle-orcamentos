@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react'
 import { 
   Plus, Search, ShoppingCart, Package, User, Trash2, 
   FileText, Check, X, Edit2, Eye, Printer, Download,
-  Calculator, Receipt, TrendingUp, RefreshCw, AlertCircle
+  Calculator, Receipt, TrendingUp, RefreshCw, AlertCircle,
+  Calendar, Building2
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { 
@@ -15,7 +16,8 @@ import { ClienteDetailModal, ProdutoDetailModal } from '@/components/ui/DetailMo
 import { 
   fetchClientes, fetchProdutos, createVenda, fetchVendas,
   updateVenda, deleteVenda, createLancamentoFinanceiro,
-  createContaReceber, Cliente, Produto, Venda
+  createContaReceber, Cliente, Produto, Venda, ContaBancaria,
+  fetchContasBancarias, baixarEstoqueVenda, verificarBaixaEstoqueVenda
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
@@ -40,6 +42,8 @@ interface VendaForm {
   forma_pagamento: string
   condicao_pagamento: string
   parcelas: number
+  data_primeiro_vencimento: string
+  conta_bancaria_id: number | null
   observacoes: string
   itens: ItemVenda[]
 }
@@ -76,6 +80,7 @@ export default function VendasPage() {
   const [loadingNF, setLoadingNF] = useState(false)
   const [saving, setSaving] = useState(false)
   const [generatingNF, setGeneratingNF] = useState(false)
+  const [contasBancarias, setContasBancarias] = useState<ContaBancaria[]>([])
 
   // Estados para modais de detalhes
   const [clienteModalOpen, setClienteModalOpen] = useState(false)
@@ -92,6 +97,8 @@ export default function VendasPage() {
     forma_pagamento: 'dinheiro',
     condicao_pagamento: 'vista',
     parcelas: 1,
+    data_primeiro_vencimento: '',
+    conta_bancaria_id: null,
     observacoes: '',
     itens: []
   })
@@ -113,14 +120,16 @@ export default function VendasPage() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const [vendasData, clientesData, produtosData] = await Promise.all([
+      const [vendasData, clientesData, produtosData, contasBancariasData] = await Promise.all([
         fetchVendas(),
         fetchClientes(),
-        fetchProdutos()
+        fetchProdutos(),
+        fetchContasBancarias()
       ])
       setVendas(vendasData)
       setClientes(clientesData)
       setProdutos(produtosData)
+      setContasBancarias(contasBancariasData)
     } catch (error) {
       console.error('Erro ao carregar dados:', error)
     } finally {
@@ -129,6 +138,10 @@ export default function VendasPage() {
   }
 
   const resetForm = () => {
+    // Calcular data do primeiro vencimento (30 dias)
+    const dataVenc = new Date()
+    dataVenc.setDate(dataVenc.getDate() + 30)
+    
     setForm({
       cliente_id: null,
       data_venda: new Date().toISOString().split('T')[0],
@@ -137,6 +150,8 @@ export default function VendasPage() {
       forma_pagamento: 'dinheiro',
       condicao_pagamento: 'vista',
       parcelas: 1,
+      data_primeiro_vencimento: dataVenc.toISOString().split('T')[0],
+      conta_bancaria_id: contasBancarias.length > 0 ? contasBancarias[0].id : null,
       observacoes: '',
       itens: []
     })
@@ -152,6 +167,10 @@ export default function VendasPage() {
 
   const openEditVenda = (venda: Venda) => {
     setSelectedVenda(venda)
+    
+    const dataVenc = new Date(venda.data_venda)
+    dataVenc.setDate(dataVenc.getDate() + 30)
+    
     setForm({
       cliente_id: venda.cliente_id || null,
       data_venda: venda.data_venda,
@@ -160,6 +179,8 @@ export default function VendasPage() {
       forma_pagamento: 'dinheiro',
       condicao_pagamento: 'vista',
       parcelas: 1,
+      data_primeiro_vencimento: dataVenc.toISOString().split('T')[0],
+      conta_bancaria_id: contasBancarias.length > 0 ? contasBancarias[0].id : null,
       observacoes: venda.observacoes || '',
       itens: (venda.itens || []).map((item: any) => ({
         produto_id: item.produto_id,
@@ -168,7 +189,7 @@ export default function VendasPage() {
         quantidade: item.quantidade,
         valor_unitario: item.valor_unitario,
         valor_desconto: item.valor_desconto || 0,
-        valor_total: item.valor_total,
+        valor_total: item.quantidade * item.valor_unitario - (item.valor_desconto || 0),
         custo_unitario: item.custo_unitario || 0
       }))
     })
@@ -274,20 +295,35 @@ export default function VendasPage() {
         quantidade: item.quantidade,
         valor_unitario: item.valor_unitario,
         valor_desconto: item.valor_desconto,
-        valor_total: item.valor_total,
+        valor_total: item.quantidade * item.valor_unitario - item.valor_desconto,
         custo_unitario: item.custo_unitario
       }))
 
       let vendaId: number
 
       if (selectedVenda) {
+        // EDIÇÃO: Recalcular valor_total de cada item e atualizar
         await updateVenda(selectedVenda.id, vendaData, itensParaSalvar)
         vendaId = selectedVenda.id
+        
+        // Baixar estoque na edição também (se ainda não baixou)
+        await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
+          produto_id: item.produto_id,
+          quantidade: item.quantidade,
+          descricao: item.descricao
+        })))
       } else {
         const novaVenda = await createVenda(vendaData, itensParaSalvar)
         vendaId = novaVenda.id
 
-        // Se for à vista, criar lançamento financeiro
+        // Baixar estoque automaticamente (verifica duplicação com NF internamente)
+        await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
+          produto_id: item.produto_id,
+          quantidade: item.quantidade,
+          descricao: item.descricao
+        })))
+
+        // Se for à vista, criar lançamento financeiro diretamente
         if (form.condicao_pagamento === 'vista') {
           await createLancamentoFinanceiro({
             tipo: 'receita',
@@ -296,24 +332,34 @@ export default function VendasPage() {
             descricao: `Venda #${vendaId}`,
             cliente_id: form.cliente_id || undefined,
             venda_id: vendaId,
+            conta_id: form.conta_bancaria_id || undefined,
             forma_pagamento: form.forma_pagamento as any,
             conciliado: false
           })
         } else if (form.condicao_pagamento === 'prazo' || form.condicao_pagamento === 'parcelado') {
-          // Criar contas a receber
+          // Para vendas a prazo/parcelado: criar apenas contas a receber (sem lançamento financeiro)
+          // O lançamento financeiro será criado ao confirmar o recebimento de cada parcela
           const numParcelas = form.condicao_pagamento === 'parcelado' ? form.parcelas : 1
-          const valorParcela = totais.total / numParcelas
+          const valorParcela = Math.round((totais.total / numParcelas) * 100) / 100
+          // Ajustar última parcela para compensar arredondamento
+          const valorUltimaParcela = totais.total - (valorParcela * (numParcelas - 1))
+
+          const dataBase = form.data_primeiro_vencimento 
+            ? new Date(form.data_primeiro_vencimento + 'T00:00:00')
+            : (() => { const d = new Date(form.data_venda); d.setMonth(d.getMonth() + 1); return d })()
 
           for (let i = 0; i < numParcelas; i++) {
-            const dataVencimento = new Date(form.data_venda)
-            dataVencimento.setMonth(dataVencimento.getMonth() + i + 1)
+            const dataVencimento = new Date(dataBase)
+            dataVencimento.setMonth(dataVencimento.getMonth() + i)
+            const valor = i === numParcelas - 1 ? valorUltimaParcela : valorParcela
 
             await createContaReceber({
               cliente_id: form.cliente_id || undefined,
               descricao: `Venda #${vendaId} - Parcela ${i + 1}/${numParcelas}`,
-              valor: valorParcela,
+              valor: valor,
               data_vencimento: dataVencimento.toISOString().split('T')[0],
               venda_id: vendaId,
+              conta_bancaria_id: form.conta_bancaria_id || undefined,
               status: 'pendente'
             })
           }
@@ -1263,7 +1309,7 @@ export default function VendasPage() {
           )}
 
           {/* Condições de Pagamento */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">
                 Forma de Pagamento
@@ -1292,22 +1338,58 @@ export default function VendasPage() {
                 ))}
               </select>
             </div>
-            {form.condicao_pagamento === 'parcelado' && (
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                <Building2 className="w-4 h-4 inline mr-1" />
+                Conta Bancária
+              </label>
+              <select
+                value={form.conta_bancaria_id || ''}
+                onChange={(e) => setForm(prev => ({ ...prev, conta_bancaria_id: e.target.value ? Number(e.target.value) : null }))}
+                className="input w-full"
+              >
+                <option value="">Selecione...</option>
+                {contasBancarias.map(cb => (
+                  <option key={cb.id} value={cb.id}>{cb.nome} - {cb.banco}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {(form.condicao_pagamento === 'prazo' || form.condicao_pagamento === 'parcelado') && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-dark-300 mb-2">
-                  Parcelas
+                  <Calendar className="w-4 h-4 inline mr-1" />
+                  Data 1º Vencimento
                 </label>
-                <select
-                  value={form.parcelas}
-                  onChange={(e) => setForm(prev => ({ ...prev, parcelas: Number(e.target.value) }))}
+                <input
+                  type="date"
+                  value={form.data_primeiro_vencimento}
+                  onChange={(e) => setForm(prev => ({ ...prev, data_primeiro_vencimento: e.target.value }))}
                   className="input w-full"
-                >
-                  {[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(n => (
-                    <option key={n} value={n}>{n}x</option>
-                  ))}
-                </select>
+                />
               </div>
-            )}
+              {form.condicao_pagamento === 'parcelado' && (
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Parcelas
+                  </label>
+                  <select
+                    value={form.parcelas}
+                    onChange={(e) => setForm(prev => ({ ...prev, parcelas: Number(e.target.value) }))}
+                    className="input w-full"
+                  >
+                    {[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(n => (
+                      <option key={n} value={n}>{n}x</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">
                 Frete
