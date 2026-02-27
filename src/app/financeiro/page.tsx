@@ -4,7 +4,8 @@ import { useEffect, useState, useRef } from 'react'
 import { 
   Plus, Edit2, Trash2, Search, DollarSign, TrendingUp, TrendingDown,
   Calendar, FileText, Upload, Download, CheckCircle, Clock, AlertTriangle,
-  CreditCard, Wallet, Building2, RefreshCw, Filter, AlertCircle, Repeat
+  CreditCard, Wallet, Building2, RefreshCw, Filter, AlertCircle, Repeat,
+  XCircle, Undo2, Link2
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -20,7 +21,8 @@ import {
   fetchLancamentosFinanceiros, createLancamentoFinanceiro,
   fetchFornecedores, fetchClientes, checkOFXDuplicado,
   checkOFXDuplicadoAvancado, ResultadoImportacaoOFX,
-  createFornecedor, fetchFornecedorByCnpj, fetchFornecedorByCpf
+  createFornecedor, fetchFornecedorByCnpj, fetchFornecedorByCpf,
+  anularPagamento, anularRecebimento, sincronizarBoletosComExtrato, ResultadoSincronizacao
 } from '@/lib/database'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -136,6 +138,17 @@ export default function FinanceiroPage() {
   const ofxRowRefs = useRef<{[key: string]: HTMLTableRowElement | null}>({})
   const ofxSelectRefs = useRef<{[key: string]: HTMLSelectElement | null}>({})
   const contaBancariaSelectRef = useRef<HTMLSelectElement | null>(null)
+  
+  // Modal de confirmação de pagamento/recebimento com data
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false)
+  const [confirmModalType, setConfirmModalType] = useState<'pagar' | 'receber'>('pagar')
+  const [confirmModalConta, setConfirmModalConta] = useState<ContaPagar | ContaReceber | null>(null)
+  const [confirmModalDate, setConfirmModalDate] = useState('')
+  
+  // Sincronização boletos com extrato
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false)
+  const [syncResult, setSyncResult] = useState<ResultadoSincronizacao | null>(null)
+  const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -400,30 +413,79 @@ export default function FinanceiroPage() {
   }
 
   const handlePagarConta = async (conta: ContaPagar) => {
-    if (!confirm('Confirma o pagamento desta conta?')) return
+    // Abre modal de confirmação com campo de data
+    setConfirmModalType('pagar')
+    setConfirmModalConta(conta)
+    setConfirmModalDate(new Date().toISOString().split('T')[0])
+    setIsConfirmModalOpen(true)
+  }
+
+  const handleAnularPagamento = async (conta: ContaPagar) => {
+    if (!confirm('Deseja anular o pagamento desta conta? O status voltará para pendente e o lançamento financeiro será removido.')) return
     
     try {
-      await updateContaPagar(conta.id, {
-        status: 'pago',
-        data_pagamento: new Date().toISOString().split('T')[0]
-      })
-      
-      // Criar lançamento
-      if (conta.conta_bancaria_id) {
-        await createLancamentoFinanceiro({
-          conta_id: conta.conta_bancaria_id,
-          tipo: 'despesa',
-          valor: conta.valor,
-          data_lancamento: new Date().toISOString().split('T')[0],
-          descricao: conta.descricao,
-          categoria_id: conta.categoria_id,
-          conciliado: false
-        })
-      }
-      
+      await anularPagamento(conta.id)
       await loadData()
     } catch (err) {
-      console.error('Erro ao pagar conta:', err)
+      console.error('Erro ao anular pagamento:', err)
+      alert('Erro ao anular pagamento: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    }
+  }
+
+  const handleConfirmarPagamentoRecebimento = async () => {
+    if (!confirmModalConta || !confirmModalDate) return
+    
+    try {
+      setSaving(true)
+      
+      if (confirmModalType === 'pagar') {
+        const conta = confirmModalConta as ContaPagar
+        await updateContaPagar(conta.id, {
+          status: 'pago',
+          data_pagamento: confirmModalDate
+        })
+        
+        // Criar lançamento
+        if (conta.conta_bancaria_id) {
+          await createLancamentoFinanceiro({
+            conta_id: conta.conta_bancaria_id,
+            tipo: 'despesa',
+            valor: conta.valor,
+            data_lancamento: confirmModalDate,
+            descricao: conta.descricao,
+            categoria_id: conta.categoria_id,
+            conciliado: false
+          })
+        }
+      } else {
+        const conta = confirmModalConta as ContaReceber
+        await updateContaReceber(conta.id, {
+          status: 'recebido',
+          data_recebimento: confirmModalDate
+        })
+        
+        // Criar lançamento
+        if (conta.conta_bancaria_id) {
+          await createLancamentoFinanceiro({
+            conta_id: conta.conta_bancaria_id,
+            tipo: 'receita',
+            valor: conta.valor,
+            data_lancamento: confirmModalDate,
+            descricao: conta.descricao,
+            categoria_id: conta.categoria_id,
+            conciliado: false
+          })
+        }
+      }
+      
+      setIsConfirmModalOpen(false)
+      setConfirmModalConta(null)
+      await loadData()
+    } catch (err) {
+      console.error('Erro ao confirmar:', err)
+      alert('Erro: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -555,30 +617,53 @@ export default function FinanceiroPage() {
   }
 
   const handleReceberConta = async (conta: ContaReceber) => {
-    if (!confirm('Confirma o recebimento desta conta?')) return
+    // Abre modal de confirmação com campo de data
+    setConfirmModalType('receber')
+    setConfirmModalConta(conta)
+    setConfirmModalDate(new Date().toISOString().split('T')[0])
+    setIsConfirmModalOpen(true)
+  }
+
+  const handleAnularRecebimento = async (conta: ContaReceber) => {
+    if (!confirm('Deseja anular o recebimento desta conta? O status voltará para pendente e o lançamento financeiro será removido.')) return
     
     try {
-      await updateContaReceber(conta.id, {
-        status: 'recebido',
-        data_recebimento: new Date().toISOString().split('T')[0]
-      })
-      
-      // Criar lançamento
-      if (conta.conta_bancaria_id) {
-        await createLancamentoFinanceiro({
-          conta_id: conta.conta_bancaria_id,
-          tipo: 'receita',
-          valor: conta.valor,
-          data_lancamento: new Date().toISOString().split('T')[0],
-          descricao: conta.descricao,
-          categoria_id: conta.categoria_id,
-          conciliado: false
-        })
-      }
-      
+      await anularRecebimento(conta.id)
       await loadData()
     } catch (err) {
-      console.error('Erro ao receber conta:', err)
+      console.error('Erro ao anular recebimento:', err)
+      alert('Erro ao anular recebimento: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    }
+  }
+
+  // Sincronização de boletos com extrato bancário
+  const handleSincronizarBoletos = async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    
+    try {
+      // Sincronizar contas a pagar
+      const resultPagar = await sincronizarBoletosComExtrato('pagar', filterContaBancaria || undefined)
+      // Sincronizar contas a receber
+      const resultReceber = await sincronizarBoletosComExtrato('receber', filterContaBancaria || undefined)
+      
+      // Mesclar resultados
+      const resultado: ResultadoSincronizacao = {
+        totalContas: resultPagar.totalContas + resultReceber.totalContas,
+        conciliadas: resultPagar.conciliadas + resultReceber.conciliadas,
+        jaConciliadas: resultPagar.jaConciliadas + resultReceber.jaConciliadas,
+        semCorrespondencia: resultPagar.semCorrespondencia + resultReceber.semCorrespondencia,
+        detalhes: [...resultPagar.detalhes, ...resultReceber.detalhes]
+      }
+      
+      setSyncResult(resultado)
+      setIsSyncModalOpen(true)
+      await loadData()
+    } catch (err) {
+      console.error('Erro ao sincronizar:', err)
+      alert('Erro ao sincronizar: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setSyncing(false)
     }
   }
 
@@ -1069,12 +1154,23 @@ export default function FinanceiroPage() {
                   </option>
                 </select>
                 
-                <Button 
-                  onClick={() => activeTab === 'pagar' ? openPagarModal() : openReceberModal()}
-                  leftIcon={<Plus className="w-4 h-4" />}
-                >
-                  {activeTab === 'pagar' ? 'Nova Conta a Pagar' : 'Nova Conta a Receber'}
-                </Button>
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={() => activeTab === 'pagar' ? openPagarModal() : openReceberModal()}
+                    leftIcon={<Plus className="w-4 h-4" />}
+                  >
+                    {activeTab === 'pagar' ? 'Nova Conta a Pagar' : 'Nova Conta a Receber'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={handleSincronizarBoletos}
+                    leftIcon={syncing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                    disabled={syncing}
+                    title="Sincronizar boletos com entradas no extrato bancário para evitar duplicatas"
+                  >
+                    {syncing ? 'Sincronizando...' : 'Sincronizar'}
+                  </Button>
+                </div>
               </>
             )}
             
@@ -1160,9 +1256,18 @@ export default function FinanceiroPage() {
                             <button
                               onClick={() => handlePagarConta(conta)}
                               className="p-2 rounded-lg text-dark-400 hover:text-green-400 hover:bg-green-500/10 transition-colors"
-                              title="Pagar"
+                              title="Confirmar Pagamento"
                             >
                               <CheckCircle className="w-4 h-4" />
+                            </button>
+                          )}
+                          {conta.status === 'pago' && (
+                            <button
+                              onClick={() => handleAnularPagamento(conta)}
+                              className="p-2 rounded-lg text-dark-400 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+                              title="Anular Pagamento"
+                            >
+                              <Undo2 className="w-4 h-4" />
                             </button>
                           )}
                           <button
@@ -1262,9 +1367,18 @@ export default function FinanceiroPage() {
                             <button
                               onClick={() => handleReceberConta(conta)}
                               className="p-2 rounded-lg text-dark-400 hover:text-green-400 hover:bg-green-500/10 transition-colors"
-                              title="Receber"
+                              title="Confirmar Recebimento"
                             >
                               <CheckCircle className="w-4 h-4" />
+                            </button>
+                          )}
+                          {conta.status === 'recebido' && (
+                            <button
+                              onClick={() => handleAnularRecebimento(conta)}
+                              className="p-2 rounded-lg text-dark-400 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+                              title="Anular Recebimento"
+                            >
+                              <Undo2 className="w-4 h-4" />
                             </button>
                           )}
                           <button
@@ -2159,6 +2273,141 @@ export default function FinanceiroPage() {
             </div>
           </div>
         </div>
+      </Modal>
+
+      {/* Modal de Confirmação de Pagamento/Recebimento */}
+      <Modal
+        isOpen={isConfirmModalOpen}
+        onClose={() => setIsConfirmModalOpen(false)}
+        title={confirmModalType === 'pagar' ? 'Confirmar Pagamento' : 'Confirmar Recebimento'}
+        size="md"
+      >
+        <div className="space-y-4">
+          {confirmModalConta && (
+            <>
+              <div className="glass-card p-4 bg-dark-800/50">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-dark-400 text-sm">Descrição</span>
+                  <span className="text-white font-medium">{confirmModalConta.descricao}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-dark-400 text-sm">Valor</span>
+                  <span className="text-green-400 font-bold text-lg">{formatCurrency(confirmModalConta.valor)}</span>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm text-dark-300 mb-2">
+                  <Calendar className="w-4 h-4 inline mr-2" />
+                  Data do {confirmModalType === 'pagar' ? 'Pagamento' : 'Recebimento'} *
+                </label>
+                <input
+                  type="date"
+                  value={confirmModalDate}
+                  onChange={(e) => setConfirmModalDate(e.target.value)}
+                  className="input w-full"
+                  required
+                />
+                <p className="text-xs text-dark-500 mt-1">
+                  Informe a data real do {confirmModalType === 'pagar' ? 'pagamento' : 'recebimento'} para conciliar com o extrato bancário (OFX).
+                </p>
+              </div>
+              
+              <div className="flex gap-3 justify-end pt-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setIsConfirmModalOpen(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleConfirmarPagamentoRecebimento}
+                  leftIcon={saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                  disabled={saving || !confirmModalDate}
+                >
+                  {saving ? 'Processando...' : `Confirmar ${confirmModalType === 'pagar' ? 'Pagamento' : 'Recebimento'}`}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+
+      {/* Modal de Resultado da Sincronização */}
+      <Modal
+        isOpen={isSyncModalOpen}
+        onClose={() => { setIsSyncModalOpen(false); setSyncResult(null) }}
+        title="Resultado da Sincronização"
+        size="lg"
+      >
+        {syncResult && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="glass-card p-3 text-center bg-dark-800/50">
+                <p className="text-2xl font-bold text-white">{syncResult.totalContas}</p>
+                <p className="text-xs text-dark-400">Total Analisadas</p>
+              </div>
+              <div className="glass-card p-3 text-center bg-dark-800/50">
+                <p className="text-2xl font-bold text-green-400">{syncResult.conciliadas}</p>
+                <p className="text-xs text-dark-400">Conciliadas Agora</p>
+              </div>
+              <div className="glass-card p-3 text-center bg-dark-800/50">
+                <p className="text-2xl font-bold text-blue-400">{syncResult.jaConciliadas}</p>
+                <p className="text-xs text-dark-400">Já Conciliadas</p>
+              </div>
+              <div className="glass-card p-3 text-center bg-dark-800/50">
+                <p className="text-2xl font-bold text-yellow-400">{syncResult.semCorrespondencia}</p>
+                <p className="text-xs text-dark-400">Sem Correspondência</p>
+              </div>
+            </div>
+
+            {syncResult.conciliadas > 0 && (
+              <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                <p className="text-green-400 text-sm flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4" />
+                  {syncResult.conciliadas} lançamento(s) duplicado(s) foram removidos/conciliados com sucesso!
+                </p>
+              </div>
+            )}
+
+            {syncResult.detalhes.length > 0 && (
+              <div className="max-h-64 overflow-y-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Descrição</th>
+                      <th className="text-right">Valor</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {syncResult.detalhes.map((d, i) => (
+                      <tr key={i}>
+                        <td className="text-white text-sm">{d.descricao}</td>
+                        <td className="text-right text-white text-sm">{formatCurrency(d.valor)}</td>
+                        <td>
+                          <Badge variant={
+                            d.status === 'conciliado' ? 'success' :
+                            d.status === 'ja_conciliado' ? 'info' : 'warning'
+                          }>
+                            {d.status === 'conciliado' ? 'Conciliado' :
+                             d.status === 'ja_conciliado' ? 'Já Conciliado' : 'Sem Correspondência'}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <Button onClick={() => { setIsSyncModalOpen(false); setSyncResult(null) }}>
+                Fechar
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modais de Detalhes */}

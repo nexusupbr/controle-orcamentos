@@ -3288,6 +3288,293 @@ export async function deleteContaReceber(id: number): Promise<void> {
   if (error) throw new Error(error.message)
 }
 
+// ==================== FUNÇÕES - ANULAR PAGAMENTO/RECEBIMENTO ====================
+
+/**
+ * Anula um pagamento de conta a pagar, voltando o status para pendente/vencido
+ * e removendo o lançamento financeiro associado (se houver).
+ */
+export async function anularPagamento(contaId: number): Promise<ContaPagar> {
+  // 1. Buscar a conta para obter dados
+  const { data: conta, error: fetchError } = await supabase
+    .from('contas_pagar')
+    .select('*')
+    .eq('id', contaId)
+    .single()
+
+  if (fetchError || !conta) throw new Error('Conta a pagar não encontrada')
+  if (conta.status !== 'pago') throw new Error('Esta conta não está marcada como paga')
+
+  // 2. Verificar se o vencimento já passou para definir status correto
+  const hoje = new Date()
+  hoje.setHours(0, 0, 0, 0)
+  const vencimento = new Date(conta.data_vencimento + 'T00:00:00')
+  const novoStatus = vencimento < hoje ? 'vencido' : 'pendente'
+
+  // 3. Atualizar a conta removendo pagamento
+  const { data: contaAtualizada, error: updateError } = await supabase
+    .from('contas_pagar')
+    .update({
+      status: novoStatus,
+      data_pagamento: null,
+      valor_pago: 0,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', contaId)
+    .select()
+    .single()
+
+  if (updateError) throw new Error(updateError.message)
+
+  // 4. Remover lançamento financeiro associado (buscar pelo valor, data e descrição)
+  if (conta.conta_bancaria_id && conta.data_pagamento) {
+    const { data: lancamentos } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id')
+      .eq('conta_id', conta.conta_bancaria_id)
+      .eq('tipo', 'despesa')
+      .eq('valor', conta.valor)
+      .eq('descricao', conta.descricao)
+      .eq('data_lancamento', conta.data_pagamento)
+
+    if (lancamentos && lancamentos.length > 0) {
+      // Remove o mais recente (último criado)
+      const ultimoLancamento = lancamentos[lancamentos.length - 1]
+      await supabase
+        .from('lancamentos_financeiros')
+        .delete()
+        .eq('id', ultimoLancamento.id)
+    }
+  }
+
+  return contaAtualizada
+}
+
+/**
+ * Anula um recebimento de conta a receber, voltando o status para pendente/vencido
+ * e removendo o lançamento financeiro associado (se houver).
+ */
+export async function anularRecebimento(contaId: number): Promise<ContaReceber> {
+  // 1. Buscar a conta para obter dados
+  const { data: conta, error: fetchError } = await supabase
+    .from('contas_receber')
+    .select('*')
+    .eq('id', contaId)
+    .single()
+
+  if (fetchError || !conta) throw new Error('Conta a receber não encontrada')
+  if (conta.status !== 'recebido') throw new Error('Esta conta não está marcada como recebida')
+
+  // 2. Verificar se o vencimento já passou para definir status correto
+  const hoje = new Date()
+  hoje.setHours(0, 0, 0, 0)
+  const vencimento = new Date(conta.data_vencimento + 'T00:00:00')
+  const novoStatus = vencimento < hoje ? 'vencido' : 'pendente'
+
+  // 3. Atualizar a conta removendo recebimento
+  const { data: contaAtualizada, error: updateError } = await supabase
+    .from('contas_receber')
+    .update({
+      status: novoStatus,
+      data_recebimento: null,
+      valor_recebido: 0,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', contaId)
+    .select()
+    .single()
+
+  if (updateError) throw new Error(updateError.message)
+
+  // 4. Remover lançamento financeiro associado
+  if (conta.conta_bancaria_id && conta.data_recebimento) {
+    const { data: lancamentos } = await supabase
+      .from('lancamentos_financeiros')
+      .select('id')
+      .eq('conta_id', conta.conta_bancaria_id)
+      .eq('tipo', 'receita')
+      .eq('valor', conta.valor)
+      .eq('descricao', conta.descricao)
+      .eq('data_lancamento', conta.data_recebimento)
+
+    if (lancamentos && lancamentos.length > 0) {
+      const ultimoLancamento = lancamentos[lancamentos.length - 1]
+      await supabase
+        .from('lancamentos_financeiros')
+        .delete()
+        .eq('id', ultimoLancamento.id)
+    }
+  }
+
+  return contaAtualizada
+}
+
+// ==================== FUNÇÕES - SINCRONIZAÇÃO BOLETOS/EXTRATO ====================
+
+export interface ResultadoSincronizacao {
+  totalContas: number
+  conciliadas: number
+  jaConciliadas: number
+  semCorrespondencia: number
+  detalhes: {
+    descricao: string
+    valor: number
+    status: 'conciliado' | 'ja_conciliado' | 'sem_correspondencia'
+    lancamentoId?: number
+  }[]
+}
+
+/**
+ * Sincroniza boletos (contas a pagar/receber) com lançamentos do extrato bancário.
+ * Marca como conciliado os lançamentos que correspondem a pagamentos/recebimentos,
+ * e remove lançamentos duplicados gerados por confirmar pagamento quando já existia entrada OFX.
+ */
+export async function sincronizarBoletosComExtrato(
+  tipo: 'pagar' | 'receber',
+  contaBancariaId?: number
+): Promise<ResultadoSincronizacao> {
+  const resultado: ResultadoSincronizacao = {
+    totalContas: 0,
+    conciliadas: 0,
+    jaConciliadas: 0,
+    semCorrespondencia: 0,
+    detalhes: []
+  }
+
+  // 1. Buscar contas pagas/recebidas
+  const tabela = tipo === 'pagar' ? 'contas_pagar' : 'contas_receber'
+  const statusFiltro = tipo === 'pagar' ? 'pago' : 'recebido'
+  const tipoLancamento = tipo === 'pagar' ? 'despesa' : 'receita'
+  const campoData = tipo === 'pagar' ? 'data_pagamento' : 'data_recebimento'
+
+  let queryContas = supabase
+    .from(tabela)
+    .select('*')
+    .eq('status', statusFiltro)
+    .not(campoData, 'is', null)
+
+  if (contaBancariaId) {
+    queryContas = queryContas.eq('conta_bancaria_id', contaBancariaId)
+  }
+
+  const { data: contas, error: contasError } = await queryContas
+  if (contasError) throw new Error(contasError.message)
+  if (!contas || contas.length === 0) return resultado
+
+  resultado.totalContas = contas.length
+
+  for (const conta of contas) {
+    const contaIdBancaria = conta.conta_bancaria_id
+    if (!contaIdBancaria) {
+      resultado.semCorrespondencia++
+      resultado.detalhes.push({
+        descricao: conta.descricao,
+        valor: conta.valor,
+        status: 'sem_correspondencia'
+      })
+      continue
+    }
+
+    const dataPgto = conta[campoData]
+
+    // 2. Buscar lançamentos correspondentes no extrato (mesmo valor, mesma conta, data próxima ±3 dias)
+    const dataBase = new Date(dataPgto + 'T00:00:00')
+    const dataInicio = new Date(dataBase)
+    dataInicio.setDate(dataInicio.getDate() - 3)
+    const dataFim = new Date(dataBase)
+    dataFim.setDate(dataFim.getDate() + 3)
+
+    const { data: lancamentos } = await supabase
+      .from('lancamentos_financeiros')
+      .select('*')
+      .eq('conta_id', contaIdBancaria)
+      .eq('valor', conta.valor)
+      .gte('data_lancamento', dataInicio.toISOString().split('T')[0])
+      .lte('data_lancamento', dataFim.toISOString().split('T')[0])
+      .in('tipo', tipo === 'pagar' ? ['despesa', 'saida'] : ['receita', 'entrada'])
+
+    if (!lancamentos || lancamentos.length === 0) {
+      resultado.semCorrespondencia++
+      resultado.detalhes.push({
+        descricao: conta.descricao,
+        valor: conta.valor,
+        status: 'sem_correspondencia'
+      })
+      continue
+    }
+
+    // 3. Verificar duplicatas: se há mais de 1 lançamento com mesmo valor e data próxima,
+    // é provável que um seja do OFX e outro do "confirmar pagamento"
+    if (lancamentos.length > 1) {
+      // Separar: OFX vs manual
+      const lancamentosOFX = lancamentos.filter(l => l.ofx_fitid)
+      const lancamentosManuais = lancamentos.filter(l => !l.ofx_fitid)
+
+      if (lancamentosOFX.length > 0 && lancamentosManuais.length > 0) {
+        // Remover os manuais duplicados (manter apenas o OFX)
+        for (const manual of lancamentosManuais) {
+          await supabase
+            .from('lancamentos_financeiros')
+            .delete()
+            .eq('id', manual.id)
+        }
+      }
+
+      // Conciliar o lançamento OFX (ou o primeiro se não havia OFX)
+      const lancParaConciliar = lancamentosOFX[0] || lancamentos[0]
+      if (!lancParaConciliar.conciliado) {
+        await supabase
+          .from('lancamentos_financeiros')
+          .update({ conciliado: true, updated_at: new Date().toISOString() })
+          .eq('id', lancParaConciliar.id)
+
+        resultado.conciliadas++
+        resultado.detalhes.push({
+          descricao: conta.descricao,
+          valor: conta.valor,
+          status: 'conciliado',
+          lancamentoId: lancParaConciliar.id
+        })
+      } else {
+        resultado.jaConciliadas++
+        resultado.detalhes.push({
+          descricao: conta.descricao,
+          valor: conta.valor,
+          status: 'ja_conciliado',
+          lancamentoId: lancParaConciliar.id
+        })
+      }
+    } else {
+      // Apenas 1 lançamento - conciliar
+      const lanc = lancamentos[0]
+      if (!lanc.conciliado) {
+        await supabase
+          .from('lancamentos_financeiros')
+          .update({ conciliado: true, updated_at: new Date().toISOString() })
+          .eq('id', lanc.id)
+
+        resultado.conciliadas++
+        resultado.detalhes.push({
+          descricao: conta.descricao,
+          valor: conta.valor,
+          status: 'conciliado',
+          lancamentoId: lanc.id
+        })
+      } else {
+        resultado.jaConciliadas++
+        resultado.detalhes.push({
+          descricao: conta.descricao,
+          valor: conta.valor,
+          status: 'ja_conciliado',
+          lancamentoId: lanc.id
+        })
+      }
+    }
+  }
+
+  return resultado
+}
+
 // ==================== FUNÇÕES - VENDAS ====================
 
 export async function fetchVendas(filtros?: {
