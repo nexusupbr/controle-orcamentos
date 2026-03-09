@@ -149,14 +149,37 @@ export default function EstoquePage() {
   })
   const [editingCategoriaId, setEditingCategoriaId] = useState<number | null>(null)
   
-  // Formador de preço
+  // Formador de preço - carregar valores padrão do localStorage
+  const getFormadorDefaults = () => {
+    if (typeof window === 'undefined') return { margem: '30', impostos: '', frete: '', outros: '' }
+    const saved = localStorage.getItem('formadorPreco_defaults')
+    if (saved) {
+      try {
+        return JSON.parse(saved)
+      } catch (e) {
+        console.error('Erro ao carregar valores padrão do formador:', e)
+      }
+    }
+    return { margem: '30', impostos: '', frete: '', outros: '' }
+  }
+
   const [formadorData, setFormadorData] = useState({
     custo: '',
-    margem: '30',
-    impostos: '',
-    frete: '',
-    outros: ''
+    ...getFormadorDefaults()
   })
+
+  // Salvar valores padrão do formador de preço (exceto custo)
+  const salvarFormadorDefaults = () => {
+    if (typeof window !== 'undefined') {
+      const defaults = {
+        margem: formadorData.margem,
+        impostos: formadorData.impostos,
+        frete: formadorData.frete,
+        outros: formadorData.outros
+      }
+      localStorage.setItem('formadorPreco_defaults', JSON.stringify(defaults))
+    }
+  }
 
   useEffect(() => {
     loadData()
@@ -655,6 +678,8 @@ export default function EstoquePage() {
       valor_venda: Number(precoVenda.toFixed(2)),
       margem_lucro: margem
     })
+    // Salvar valores como padrão automaticamente ao aplicar
+    salvarFormadorDefaults()
     setIsFormadorPrecoOpen(false)
   }
 

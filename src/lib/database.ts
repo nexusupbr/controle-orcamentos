@@ -1667,6 +1667,56 @@ export async function deleteNotaFiscalSaidaCascade(notaId: number): Promise<{ su
   }
 }
 
+// Exclusão forçada de NF saída (inclusive autorizadas - para limpeza do sistema)
+export async function forceDeleteNotaSaida(notaId: number): Promise<{ success: boolean; message: string }> {
+  try {
+    const { data: nota, error: notaError } = await supabase
+      .from('notas_fiscais')
+      .select('*')
+      .eq('id', notaId)
+      .single()
+
+    if (notaError || !nota) {
+      return { success: false, message: 'Nota fiscal não encontrada' }
+    }
+
+    // Deletar eventos
+    await supabase.from('notas_fiscais_eventos').delete().eq('nota_fiscal_id', notaId)
+
+    // Deletar lançamentos financeiros vinculados
+    await supabase.from('lancamentos_financeiros').delete().eq('nota_fiscal_saida_id', notaId)
+
+    // Limpar referência na venda
+    if (nota.venda_id) {
+      await supabase
+        .from('vendas')
+        .update({
+          nota_fiscal_emitida: false,
+          numero_nf: null,
+          chave_nf: null,
+          nota_fiscal_status: null,
+          nota_fiscal_id: null
+        })
+        .eq('id', nota.venda_id)
+    }
+
+    // Deletar a nota
+    const { error: deleteError } = await supabase
+      .from('notas_fiscais')
+      .delete()
+      .eq('id', notaId)
+
+    if (deleteError) {
+      return { success: false, message: 'Erro ao excluir nota fiscal: ' + deleteError.message }
+    }
+
+    return { success: true, message: 'Nota fiscal excluída do sistema com sucesso.' }
+  } catch (err) {
+    console.error('Erro na exclusão forçada de NF saída:', err)
+    return { success: false, message: 'Erro ao processar exclusão: ' + (err instanceof Error ? err.message : 'Erro desconhecido') }
+  }
+}
+
 export async function checkOFXDuplicado(fitid: string, contaId?: number): Promise<boolean> {
   // Limpar o fitid de qualquer caractere especial
   const cleanFitid = fitid.replace(/[<>\/]/g, '').trim()

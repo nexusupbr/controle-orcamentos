@@ -44,6 +44,7 @@ interface VendaForm {
   parcelas: number
   data_primeiro_vencimento: string
   conta_bancaria_id: number | null
+  baixar_estoque: boolean
   observacoes: string
   itens: ItemVenda[]
 }
@@ -100,7 +101,8 @@ export default function VendasPage() {
     data_primeiro_vencimento: '',
     conta_bancaria_id: null,
     observacoes: '',
-    itens: []
+    itens: [],
+    baixar_estoque: true
   })
 
   // Produto selecionado para adicionar
@@ -152,6 +154,7 @@ export default function VendasPage() {
       parcelas: 1,
       data_primeiro_vencimento: dataVenc.toISOString().split('T')[0],
       conta_bancaria_id: contasBancarias.length > 0 ? contasBancarias[0].id : null,
+      baixar_estoque: true,
       observacoes: '',
       itens: []
     })
@@ -181,6 +184,7 @@ export default function VendasPage() {
       parcelas: 1,
       data_primeiro_vencimento: dataVenc.toISOString().split('T')[0],
       conta_bancaria_id: contasBancarias.length > 0 ? contasBancarias[0].id : null,
+      baixar_estoque: false,
       observacoes: venda.observacoes || '',
       itens: (venda.itens || []).map((item: any) => ({
         produto_id: item.produto_id,
@@ -306,22 +310,26 @@ export default function VendasPage() {
         await updateVenda(selectedVenda.id, vendaData, itensParaSalvar)
         vendaId = selectedVenda.id
         
-        // Baixar estoque na edição também (se ainda não baixou)
-        await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
-          produto_id: item.produto_id,
-          quantidade: item.quantidade,
-          descricao: item.descricao
-        })))
+        // Baixar estoque na edição apenas se checkbox marcado
+        if (form.baixar_estoque) {
+          await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
+            produto_id: item.produto_id,
+            quantidade: item.quantidade,
+            descricao: item.descricao
+          })))
+        }
       } else {
         const novaVenda = await createVenda(vendaData, itensParaSalvar)
         vendaId = novaVenda.id
 
-        // Baixar estoque automaticamente (verifica duplicação com NF internamente)
-        await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
-          produto_id: item.produto_id,
-          quantidade: item.quantidade,
-          descricao: item.descricao
-        })))
+        // Baixar estoque apenas se checkbox marcado
+        if (form.baixar_estoque) {
+          await baixarEstoqueVenda(vendaId, form.itens.map(item => ({
+            produto_id: item.produto_id,
+            quantidade: item.quantidade,
+            descricao: item.descricao
+          })))
+        }
 
         // Se for à vista, criar lançamento financeiro diretamente
         if (form.condicao_pagamento === 'vista') {
@@ -1454,6 +1462,20 @@ export default function VendasPage() {
               rows={3}
               className="input w-full"
             />
+          </div>
+
+          {/* Baixar Estoque */}
+          <div className="flex items-center gap-3 p-3 bg-dark-700/50 rounded-lg">
+            <input
+              type="checkbox"
+              id="baixar_estoque"
+              checked={form.baixar_estoque}
+              onChange={(e) => setForm(prev => ({ ...prev, baixar_estoque: e.target.checked }))}
+              className="w-4 h-4 rounded border-dark-500 bg-dark-700 text-primary-500 focus:ring-primary-500"
+            />
+            <label htmlFor="baixar_estoque" className="text-sm text-dark-300 cursor-pointer">
+              Baixar estoque automaticamente ao finalizar venda
+            </label>
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-dark-600">

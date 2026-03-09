@@ -5,7 +5,7 @@ import {
   Plus, Search, FileText, Upload, Download, Eye, Trash2,
   CheckCircle, XCircle, AlertTriangle, Building2, Package,
   Calendar, DollarSign, Truck, ArrowUpRight, ArrowDownLeft,
-  Filter, RefreshCw
+  Filter, RefreshCw, Ban
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { 
@@ -17,7 +17,7 @@ import {
   createNotaFiscalEntrada, createFornecedor, createProduto,
   createMovimentacaoEstoque, createContaPagar,
   deleteNotaFiscalEntradaCascade, fetchNotasFiscaisSaida,
-  deleteNotaFiscalSaidaCascade,
+  deleteNotaFiscalSaidaCascade, forceDeleteNotaSaida,
   NotaFiscalEntrada, NotaFiscalSaida, Fornecedor, Produto
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn, normalizeUnidade } from '@/lib/utils'
@@ -86,6 +86,12 @@ export default function NotasFiscaisPage() {
   // Modal de visualização NF Saída
   const [isViewSaidaModalOpen, setIsViewSaidaModalOpen] = useState(false)
   const [selectedNotaSaida, setSelectedNotaSaida] = useState<NotaFiscalSaida | null>(null)
+
+  // Cancelamento de NF
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false)
+  const [cancelJustificativa, setCancelJustificativa] = useState('')
+  const [cancelingNota, setCancelingNota] = useState(false)
+  const [notaParaCancelar, setNotaParaCancelar] = useState<NotaFiscalSaida | null>(null)
 
   // Opções para itens
   const [itemOptions, setItemOptions] = useState<Record<number, 'cadastrar' | 'substituir' | 'ignorar'>>({})
@@ -545,18 +551,22 @@ export default function NotasFiscaisPage() {
 
   // Excluir NF de Saída
   const handleDeleteNotaSaida = async (nota: NotaFiscalSaida) => {
-    // Verificar se é autorizada
-    if (nota.status === 'autorizado' || (nota.status as string) === 'autorizada') {
-      alert('⚠️ Não é possível excluir uma nota fiscal já autorizada pela SEFAZ.\n\nUse a opção de cancelamento na tela de Vendas.')
-      return
+    const isAutorizada = nota.status === 'autorizado' || (nota.status as string) === 'autorizada'
+    
+    let mensagem = `Tem certeza que deseja excluir esta nota fiscal?\n\nReferência: ${nota.referencia}\nStatus: ${nota.status}\n\nEsta ação não pode ser desfeita.`
+    
+    if (isAutorizada) {
+      mensagem = `⚠️ ATENÇÃO: Esta nota foi AUTORIZADA pela SEFAZ.\n\nExcluir do sistema NÃO cancela na SEFAZ.\nPara cancelar oficialmente, use o botão "Cancelar NF".\n\nDeseja apenas remover do sistema?\n\nReferência: ${nota.referencia}\nNúmero: ${nota.numero || '-'}\nValor: R$ ${nota.valor_total?.toFixed(2) || '0.00'}`
     }
 
-    if (!confirm(`Tem certeza que deseja excluir esta nota fiscal?\n\nReferência: ${nota.referencia}\nStatus: ${nota.status}\n\nEsta ação não pode ser desfeita.`)) {
-      return
-    }
+    if (!confirm(mensagem)) return
+    if (isAutorizada && !confirm('CONFIRMAR: Excluir nota autorizada do sistema? Esta ação é irreversível.')) return
 
     try {
-      const result = await deleteNotaFiscalSaidaCascade(nota.id)
+      // Para notas autorizadas, força a exclusão removendo o bloqueio
+      const result = isAutorizada 
+        ? await forceDeleteNotaSaida(nota.id)
+        : await deleteNotaFiscalSaidaCascade(nota.id)
       
       if (result.success) {
         alert('✅ ' + result.message)
@@ -567,6 +577,47 @@ export default function NotasFiscaisPage() {
     } catch (error: any) {
       console.error('Erro ao excluir nota:', error)
       alert('❌ Erro ao excluir nota fiscal: ' + (error.message || error))
+    }
+  }
+
+  // Cancelar NF na SEFAZ
+  const handleOpenCancelModal = (nota: NotaFiscalSaida) => {
+    setNotaParaCancelar(nota)
+    setCancelJustificativa('')
+    setIsCancelModalOpen(true)
+  }
+
+  const handleCancelarNota = async () => {
+    if (!notaParaCancelar) return
+    if (cancelJustificativa.length < 15) {
+      alert('A justificativa deve ter pelo menos 15 caracteres.')
+      return
+    }
+    
+    setCancelingNota(true)
+    try {
+      const response = await fetch('/api/nfe/cancelar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ref: notaParaCancelar.referencia,
+          justificativa: cancelJustificativa
+        })
+      })
+      const result = await response.json()
+      
+      if (response.ok && result.status === 'cancelado') {
+        alert('✅ Nota fiscal cancelada com sucesso na SEFAZ.')
+        setIsCancelModalOpen(false)
+        await loadData()
+      } else {
+        alert('❌ Erro ao cancelar: ' + (result.mensagem || result.error || JSON.stringify(result)))
+      }
+    } catch (error: any) {
+      console.error('Erro ao cancelar nota:', error)
+      alert('❌ Erro ao cancelar nota: ' + (error.message || error))
+    } finally {
+      setCancelingNota(false)
     }
   }
 
@@ -950,17 +1001,22 @@ export default function NotasFiscaisPage() {
                                 >
                                   <Download className="w-4 h-4 text-green-400" />
                                 </button>
+                                <button
+                                  onClick={() => handleOpenCancelModal(nota)}
+                                  className="p-2 hover:bg-orange-500/20 rounded-lg transition-colors"
+                                  title="Cancelar NF na SEFAZ"
+                                >
+                                  <Ban className="w-4 h-4 text-orange-400" />
+                                </button>
                               </>
                             )}
-                            {!isNotaAutorizada(nota.status) && (
-                              <button
-                                onClick={() => handleDeleteNotaSaida(nota)}
-                                className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
-                                title="Excluir nota fiscal"
-                              >
-                                <Trash2 className="w-4 h-4 text-red-400" />
-                              </button>
-                            )}
+                            <button
+                              onClick={() => handleDeleteNotaSaida(nota)}
+                              className="p-2 hover:bg-red-500/20 rounded-lg transition-colors"
+                              title="Excluir nota fiscal"
+                            >
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1408,6 +1464,75 @@ export default function NotasFiscaisPage() {
               )}
               <Button variant="secondary" onClick={() => setIsViewSaidaModalOpen(false)}>
                 Fechar
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal Cancelar NF */}
+      <Modal
+        isOpen={isCancelModalOpen}
+        onClose={() => setIsCancelModalOpen(false)}
+        title="Cancelar Nota Fiscal na SEFAZ"
+        size="md"
+      >
+        {notaParaCancelar && (
+          <div className="space-y-4">
+            <div className="p-4 bg-orange-500/10 border border-orange-500/30 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="w-5 h-5 text-orange-400" />
+                <span className="text-orange-400 font-medium">Atenção: Esta ação é irreversível</span>
+              </div>
+              <p className="text-dark-300 text-sm">
+                O cancelamento será enviado para a SEFAZ. A nota fiscal será invalidada permanentemente.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-dark-400">Referência</p>
+                <p className="text-white font-medium">{notaParaCancelar.referencia}</p>
+              </div>
+              <div>
+                <p className="text-dark-400">Número</p>
+                <p className="text-white font-medium">{notaParaCancelar.numero || '-'}</p>
+              </div>
+              <div>
+                <p className="text-dark-400">Valor</p>
+                <p className="text-white font-medium">{formatCurrency(notaParaCancelar.valor_total || 0)}</p>
+              </div>
+              <div>
+                <p className="text-dark-400">Status</p>
+                <Badge variant="success">{notaParaCancelar.status}</Badge>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-dark-300 mb-2">
+                Justificativa do cancelamento (mínimo 15 caracteres)
+              </label>
+              <textarea
+                value={cancelJustificativa}
+                onChange={(e) => setCancelJustificativa(e.target.value)}
+                placeholder="Informe o motivo do cancelamento..."
+                rows={3}
+                className="input w-full"
+              />
+              <p className="text-dark-500 text-xs mt-1">{cancelJustificativa.length}/15 caracteres</p>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="secondary" onClick={() => setIsCancelModalOpen(false)}>
+                Voltar
+              </Button>
+              <Button 
+                variant="danger" 
+                onClick={handleCancelarNota}
+                disabled={cancelingNota || cancelJustificativa.length < 15}
+                leftIcon={<Ban className="w-4 h-4" />}
+              >
+                {cancelingNota ? 'Cancelando...' : 'Cancelar NF na SEFAZ'}
               </Button>
             </div>
           </div>
