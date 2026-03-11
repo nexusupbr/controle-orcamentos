@@ -573,6 +573,8 @@ Se você excluiu a nota e quer importar novamente, verifique se ela foi removida
             motivo: `Entrada NF ${dadosNF.numero}${acaoResultado === 'vinculado' ? ' (vinculado manualmente)' : ''}`,
             data_movimentacao: new Date().toISOString()
           })
+          // Atualizar quantidade_estoque do produto
+          await incrementarEstoqueProduto(produtoId, prod.quantidade)
         }
       }
 

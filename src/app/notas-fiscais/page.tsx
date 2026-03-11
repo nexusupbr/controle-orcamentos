@@ -15,7 +15,7 @@ import { Modal } from '@/components/ui/Modal'
 import { 
   fetchNotasFiscaisEntrada, fetchFornecedores, fetchProdutos,
   createNotaFiscalEntrada, createFornecedor, createProduto,
-  createMovimentacaoEstoque, createContaPagar,
+  createMovimentacaoEstoque, incrementarEstoqueProduto, createContaPagar,
   deleteNotaFiscalEntradaCascade, fetchNotasFiscaisSaida,
   deleteNotaFiscalSaidaCascade, forceDeleteNotaSaida,
   NotaFiscalEntrada, NotaFiscalSaida, Fornecedor, Produto
@@ -379,6 +379,8 @@ export default function NotasFiscaisPage() {
             motivo: `NF ${xmlData.numero}`,
             observacao: `Entrada via XML - NF ${xmlData.numero}`
           })
+          // Atualizar quantidade_estoque do produto
+          await incrementarEstoqueProduto(novoProduto.id, item.quantidade)
         } else if (acao === 'substituir') {
           // Usar produto existente
           if (item.produto_id) {
@@ -394,6 +396,8 @@ export default function NotasFiscaisPage() {
               motivo: `NF ${xmlData.numero}`,
               observacao: `Entrada via XML - NF ${xmlData.numero}`
             })
+            // Atualizar quantidade_estoque do produto
+            await incrementarEstoqueProduto(item.produto_id, item.quantidade)
           }
         }
         // Se acao === 'ignorar', não faz nada

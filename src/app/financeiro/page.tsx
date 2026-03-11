@@ -22,7 +22,8 @@ import {
   fetchFornecedores, fetchClientes, checkOFXDuplicado,
   checkOFXDuplicadoAvancado, ResultadoImportacaoOFX,
   createFornecedor, fetchFornecedorByCnpj, fetchFornecedorByCpf,
-  anularPagamento, anularRecebimento, sincronizarBoletosComExtrato, ResultadoSincronizacao
+  anularPagamento, anularRecebimento, sincronizarBoletosComExtrato, ResultadoSincronizacao,
+  buscarLancamentosParaVincular, vincularManualmente
 } from '@/lib/database'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -149,6 +150,13 @@ export default function FinanceiroPage() {
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false)
   const [syncResult, setSyncResult] = useState<ResultadoSincronizacao | null>(null)
   const [syncing, setSyncing] = useState(false)
+  
+  // Vinculação manual
+  const [vinculandoIndex, setVinculandoIndex] = useState<number | null>(null)
+  const [candidatosVinculacao, setCandidatosVinculacao] = useState<LancamentoFinanceiro[]>([])
+  const [buscaVinculacao, setBuscaVinculacao] = useState('')
+  const [carregandoCandidatos, setCarregandoCandidatos] = useState(false)
+  const [vinculando, setVinculando] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -667,6 +675,87 @@ export default function FinanceiroPage() {
     }
   }
 
+  // Vinculação manual - abrir candidatos para um item sem correspondência
+  const handleAbrirVinculacao = async (index: number) => {
+    if (!syncResult) return
+    const detalhe = syncResult.detalhes[index]
+    if (detalhe.status !== 'sem_correspondencia' || !detalhe.tipo) return
+
+    setVinculandoIndex(index)
+    setBuscaVinculacao('')
+    setCarregandoCandidatos(true)
+    setCandidatosVinculacao([])
+
+    try {
+      const candidatos = await buscarLancamentosParaVincular({
+        contaBancariaId: detalhe.contaBancariaId,
+        tipo: detalhe.tipo,
+        busca: undefined
+      })
+      setCandidatosVinculacao(candidatos)
+    } catch (err) {
+      console.error('Erro ao buscar candidatos:', err)
+    } finally {
+      setCarregandoCandidatos(false)
+    }
+  }
+
+  // Vinculação manual - buscar com filtro  
+  const handleBuscarCandidatos = async () => {
+    if (!syncResult || vinculandoIndex === null) return
+    const detalhe = syncResult.detalhes[vinculandoIndex]
+    if (!detalhe.tipo) return
+
+    setCarregandoCandidatos(true)
+    try {
+      const candidatos = await buscarLancamentosParaVincular({
+        contaBancariaId: detalhe.contaBancariaId,
+        tipo: detalhe.tipo,
+        busca: buscaVinculacao || undefined
+      })
+      setCandidatosVinculacao(candidatos)
+    } catch (err) {
+      console.error('Erro ao buscar candidatos:', err)
+    } finally {
+      setCarregandoCandidatos(false)
+    }
+  }
+
+  // Vinculação manual - confirmar vínculo
+  const handleConfirmarVinculacao = async (lancamentoId: number) => {
+    if (!syncResult || vinculandoIndex === null) return
+    const detalhe = syncResult.detalhes[vinculandoIndex]
+    if (!detalhe.contaId || !detalhe.tipo) return
+
+    setVinculando(true)
+    try {
+      await vincularManualmente(lancamentoId, detalhe.contaId, detalhe.tipo)
+      
+      // Atualizar o resultado da sincronização
+      const novosDetalhes = [...syncResult.detalhes]
+      novosDetalhes[vinculandoIndex] = {
+        ...detalhe,
+        status: 'conciliado',
+        lancamentoId
+      }
+      setSyncResult({
+        ...syncResult,
+        conciliadas: syncResult.conciliadas + 1,
+        semCorrespondencia: syncResult.semCorrespondencia - 1,
+        detalhes: novosDetalhes
+      })
+      
+      setVinculandoIndex(null)
+      setCandidatosVinculacao([])
+      await loadData()
+    } catch (err) {
+      console.error('Erro ao vincular:', err)
+      alert('Erro ao vincular: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setVinculando(false)
+    }
+  }
+
   const handleDeleteReceber = async (id: number) => {
     if (!confirm('Tem certeza que deseja excluir esta conta?')) return
     try {
@@ -1114,47 +1203,23 @@ export default function FinanceiroPage() {
 
       {/* Filtros */}
       {(activeTab === 'pagar' || activeTab === 'receber' || activeTab === 'extrato') && (
-        <div className="glass-card p-4">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div className="relative md:col-span-2">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-400" />
+        <div className="glass-card p-4 space-y-3">
+          {/* Linha 1: Busca + Ações */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
               <input
                 type="text"
-                placeholder="Buscar..."
+                placeholder="Buscar por descrição, fornecedor, cliente..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="input pl-12 w-full"
+                className="input pl-10 w-full text-sm"
               />
             </div>
             
-            {/* Filtro de Conta Bancária - aparece em todas as abas */}
-            <select
-              value={filterContaBancaria || ''}
-              onChange={(e) => setFilterContaBancaria(e.target.value ? Number(e.target.value) : null)}
-              className="input"
-            >
-              <option value="">Todas as contas</option>
-              {contasBancarias.map(conta => (
-                <option key={conta.id} value={conta.id}>{conta.nome}</option>
-              ))}
-            </select>
-            
-            {(activeTab === 'pagar' || activeTab === 'receber') && (
-              <>
-                <select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                  className="input"
-                >
-                  <option value="todos">Todos os status</option>
-                  <option value="pendente">Pendente</option>
-                  <option value="vencido">Vencido</option>
-                  <option value={activeTab === 'pagar' ? 'pago' : 'recebido'}>
-                    {activeTab === 'pagar' ? 'Pago' : 'Recebido'}
-                  </option>
-                </select>
-                
-                <div className="flex gap-2">
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {(activeTab === 'pagar' || activeTab === 'receber') && (
+                <>
                   <Button 
                     onClick={() => activeTab === 'pagar' ? openPagarModal() : openReceberModal()}
                     leftIcon={<Plus className="w-4 h-4" />}
@@ -1170,26 +1235,60 @@ export default function FinanceiroPage() {
                   >
                     {syncing ? 'Sincronizando...' : 'Sincronizar'}
                   </Button>
-                </div>
-              </>
-            )}
+                </>
+              )}
+              
+              {activeTab === 'extrato' && (
+                <>
+                  <input
+                    type="file"
+                    accept=".ofx"
+                    onChange={handleOFXUpload}
+                    className="hidden"
+                    id="ofx-upload"
+                  />
+                  <label htmlFor="ofx-upload" className="cursor-pointer">
+                    <span className="btn btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm">
+                      <Upload className="w-4 h-4" />
+                      Importar OFX
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+          
+          {/* Linha 2: Filtros */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-dark-400 flex-shrink-0">
+              <Filter className="w-3.5 h-3.5" />
+              <span>Filtros:</span>
+            </div>
             
-            {activeTab === 'extrato' && (
-              <div className="relative md:col-span-2">
-                <input
-                  type="file"
-                  accept=".ofx"
-                  onChange={handleOFXUpload}
-                  className="hidden"
-                  id="ofx-upload"
-                />
-                <label htmlFor="ofx-upload" className="cursor-pointer">
-                  <span className="btn btn-secondary flex items-center gap-2 w-full justify-center">
-                    <Upload className="w-4 h-4" />
-                    Importar OFX
-                  </span>
-                </label>
-              </div>
+            <select
+              value={filterContaBancaria || ''}
+              onChange={(e) => setFilterContaBancaria(e.target.value ? Number(e.target.value) : null)}
+              className="input text-sm flex-1 min-w-0 sm:max-w-[200px]"
+            >
+              <option value="">Todas as contas</option>
+              {contasBancarias.map(conta => (
+                <option key={conta.id} value={conta.id}>{conta.nome}</option>
+              ))}
+            </select>
+            
+            {(activeTab === 'pagar' || activeTab === 'receber') && (
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="input text-sm flex-1 min-w-0 sm:max-w-[200px]"
+              >
+                <option value="todos">Todos os status</option>
+                <option value="pendente">Pendente</option>
+                <option value="vencido">Vencido</option>
+                <option value={activeTab === 'pagar' ? 'pago' : 'recebido'}>
+                  {activeTab === 'pagar' ? 'Pago' : 'Recebido'}
+                </option>
+              </select>
             )}
           </div>
         </div>
@@ -2336,9 +2435,9 @@ export default function FinanceiroPage() {
       {/* Modal de Resultado da Sincronização */}
       <Modal
         isOpen={isSyncModalOpen}
-        onClose={() => { setIsSyncModalOpen(false); setSyncResult(null) }}
+        onClose={() => { setIsSyncModalOpen(false); setSyncResult(null); setVinculandoIndex(null); setCandidatosVinculacao([]) }}
         title="Resultado da Sincronização"
-        size="lg"
+        size="xl"
       >
         {syncResult && (
           <div className="space-y-4">
@@ -2371,38 +2470,164 @@ export default function FinanceiroPage() {
             )}
 
             {syncResult.detalhes.length > 0 && (
-              <div className="max-h-64 overflow-y-auto">
+              <div className="max-h-80 overflow-y-auto">
                 <table className="data-table">
                   <thead>
                     <tr>
                       <th>Descrição</th>
                       <th className="text-right">Valor</th>
                       <th>Status</th>
+                      <th className="text-center">Ação</th>
                     </tr>
                   </thead>
                   <tbody>
                     {syncResult.detalhes.map((d, i) => (
-                      <tr key={i}>
-                        <td className="text-white text-sm">{d.descricao}</td>
-                        <td className="text-right text-white text-sm">{formatCurrency(d.valor)}</td>
-                        <td>
-                          <Badge variant={
-                            d.status === 'conciliado' ? 'success' :
-                            d.status === 'ja_conciliado' ? 'info' : 'warning'
-                          }>
-                            {d.status === 'conciliado' ? 'Conciliado' :
-                             d.status === 'ja_conciliado' ? 'Já Conciliado' : 'Sem Correspondência'}
-                          </Badge>
-                        </td>
-                      </tr>
+                      <>
+                        <tr key={`row-${i}`}>
+                          <td className="text-white text-sm">{d.descricao}</td>
+                          <td className="text-right text-white text-sm">{formatCurrency(d.valor)}</td>
+                          <td>
+                            <Badge variant={
+                              d.status === 'conciliado' ? 'success' :
+                              d.status === 'ja_conciliado' ? 'info' : 'warning'
+                            }>
+                              {d.status === 'conciliado' ? 'Conciliado' :
+                               d.status === 'ja_conciliado' ? 'Já Conciliado' : 'Sem Correspondência'}
+                            </Badge>
+                          </td>
+                          <td className="text-center">
+                            {d.status === 'sem_correspondencia' && (
+                              <button
+                                onClick={() => vinculandoIndex === i ? (setVinculandoIndex(null), setCandidatosVinculacao([])) : handleAbrirVinculacao(i)}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                  vinculandoIndex === i 
+                                    ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' 
+                                    : 'bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 border border-yellow-500/20'
+                                }`}
+                              >
+                                <Link2 className="w-3.5 h-3.5" />
+                                {vinculandoIndex === i ? 'Fechar' : 'Vincular'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        
+                        {/* Painel de vinculação manual expandido */}
+                        {vinculandoIndex === i && d.status === 'sem_correspondencia' && (
+                          <tr key={`vincular-${i}`}>
+                            <td colSpan={4} className="!p-0">
+                              <div className="bg-dark-800/80 border-t border-b border-primary-500/20 p-4 space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-medium text-primary-400 flex items-center gap-2">
+                                    <Link2 className="w-4 h-4" />
+                                    Vincular manualmente: <span className="text-white">{d.descricao}</span> — {formatCurrency(d.valor)}
+                                  </p>
+                                </div>
+                                
+                                {/* Busca de lançamentos */}
+                                <div className="flex gap-2">
+                                  <div className="relative flex-1">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400" />
+                                    <input
+                                      type="text"
+                                      placeholder="Buscar por descrição no extrato..."
+                                      value={buscaVinculacao}
+                                      onChange={(e) => setBuscaVinculacao(e.target.value)}
+                                      onKeyDown={(e) => e.key === 'Enter' && handleBuscarCandidatos()}
+                                      className="input pl-9 w-full text-sm py-2"
+                                    />
+                                  </div>
+                                  <Button
+                                    variant="secondary"
+                                    onClick={handleBuscarCandidatos}
+                                    className="text-sm py-2 px-3"
+                                    disabled={carregandoCandidatos}
+                                  >
+                                    {carregandoCandidatos ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                                  </Button>
+                                </div>
+
+                                {/* Lista de candidatos */}
+                                {carregandoCandidatos ? (
+                                  <div className="flex items-center justify-center py-4">
+                                    <RefreshCw className="w-5 h-5 animate-spin text-primary-400" />
+                                    <span className="ml-2 text-sm text-dark-400">Buscando lançamentos...</span>
+                                  </div>
+                                ) : candidatosVinculacao.length > 0 ? (
+                                  <div className="max-h-48 overflow-y-auto rounded-lg border border-dark-600">
+                                    <table className="w-full text-sm">
+                                      <thead className="sticky top-0 bg-dark-700">
+                                        <tr>
+                                          <th className="text-left px-3 py-2 text-dark-400 font-medium">Data</th>
+                                          <th className="text-left px-3 py-2 text-dark-400 font-medium">Descrição</th>
+                                          <th className="text-left px-3 py-2 text-dark-400 font-medium">Conta</th>
+                                          <th className="text-right px-3 py-2 text-dark-400 font-medium">Valor</th>
+                                          <th className="text-center px-3 py-2 text-dark-400 font-medium">OFX</th>
+                                          <th className="px-3 py-2"></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {candidatosVinculacao.map((cand) => (
+                                          <tr 
+                                            key={cand.id} 
+                                            className="border-t border-dark-600 hover:bg-primary-500/5 transition-colors"
+                                          >
+                                            <td className="px-3 py-2 text-dark-300 whitespace-nowrap">{formatDate(cand.data_lancamento)}</td>
+                                            <td className="px-3 py-2 text-white">{cand.descricao || '-'}</td>
+                                            <td className="px-3 py-2 text-dark-300 whitespace-nowrap">
+                                              {contasBancarias.find(c => c.id === cand.conta_id)?.nome || '-'}
+                                            </td>
+                                            <td className="px-3 py-2 text-right text-white whitespace-nowrap">{formatCurrency(cand.valor)}</td>
+                                            <td className="px-3 py-2 text-center">
+                                              {cand.ofx_fitid ? (
+                                                <Badge variant="info">OFX</Badge>
+                                              ) : (
+                                                <span className="text-dark-500 text-xs">Manual</span>
+                                              )}
+                                            </td>
+                                            <td className="px-3 py-2 text-right">
+                                              <button
+                                                onClick={() => handleConfirmarVinculacao(cand.id)}
+                                                disabled={vinculando}
+                                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-primary-500/15 text-primary-400 hover:bg-primary-500/25 border border-primary-500/20 transition-all disabled:opacity-50"
+                                              >
+                                                {vinculando ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                                                Vincular
+                                              </button>
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <div className="text-center py-4">
+                                    <p className="text-sm text-dark-400">Nenhum lançamento não conciliado encontrado no extrato.</p>
+                                    <p className="text-xs text-dark-500 mt-1">Tente buscar com outros termos ou verifique se o extrato OFX foi importado.</p>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
 
+            {syncResult.semCorrespondencia > 0 && vinculandoIndex === null && (
+              <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                <p className="text-yellow-400 text-sm flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  {syncResult.semCorrespondencia} item(ns) sem correspondência automática. Clique em &quot;Vincular&quot; para associar manualmente com um lançamento do extrato.
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-end pt-2">
-              <Button onClick={() => { setIsSyncModalOpen(false); setSyncResult(null) }}>
+              <Button onClick={() => { setIsSyncModalOpen(false); setSyncResult(null); setVinculandoIndex(null); setCandidatosVinculacao([]) }}>
                 Fechar
               </Button>
             </div>

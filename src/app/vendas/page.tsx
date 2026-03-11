@@ -5,7 +5,7 @@ import {
   Plus, Search, ShoppingCart, Package, User, Trash2, 
   FileText, Check, X, Edit2, Eye, Printer, Download,
   Calculator, Receipt, TrendingUp, RefreshCw, AlertCircle,
-  Calendar, Building2
+  Calendar, Building2, DollarSign, Clock, CheckCircle, Banknote
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { 
@@ -16,8 +16,9 @@ import { ClienteDetailModal, ProdutoDetailModal } from '@/components/ui/DetailMo
 import { 
   fetchClientes, fetchProdutos, createVenda, fetchVendas,
   updateVenda, deleteVenda, createLancamentoFinanceiro,
-  createContaReceber, Cliente, Produto, Venda, ContaBancaria,
-  fetchContasBancarias, baixarEstoqueVenda, verificarBaixaEstoqueVenda
+  createContaReceber, updateContaReceber, Cliente, Produto, Venda, ContaBancaria, ContaReceber,
+  fetchContasBancarias, baixarEstoqueVenda, verificarBaixaEstoqueVenda,
+  fetchContasReceberByVendaId, atualizarContasReceberVenda
 } from '@/lib/database'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
@@ -88,6 +89,14 @@ export default function VendasPage() {
   const [produtoModalOpen, setProdutoModalOpen] = useState(false)
   const [selectedClienteId, setSelectedClienteId] = useState<number | null>(null)
   const [selectedProdutoId, setSelectedProdutoId] = useState<number | null>(null)
+
+  // Estados para baixa financeira
+  const [isBaixaModalOpen, setIsBaixaModalOpen] = useState(false)
+  const [contasReceberVenda, setContasReceberVenda] = useState<ContaReceber[]>([])
+  const [loadingBaixa, setLoadingBaixa] = useState(false)
+  const [baixaDate, setBaixaDate] = useState('')
+  const [baixaContaId, setBaixaContaId] = useState<number | null>(null)
+  const [processandoBaixa, setProcessandoBaixa] = useState(false)
 
   // Form state
   const [form, setForm] = useState<VendaForm>({
@@ -171,19 +180,20 @@ export default function VendasPage() {
   const openEditVenda = (venda: Venda) => {
     setSelectedVenda(venda)
     
-    const dataVenc = new Date(venda.data_venda)
-    dataVenc.setDate(dataVenc.getDate() + 30)
+    const dataVenc = venda.data_primeiro_vencimento 
+      ? venda.data_primeiro_vencimento 
+      : (() => { const d = new Date(venda.data_venda); d.setDate(d.getDate() + 30); return d.toISOString().split('T')[0] })()
     
     setForm({
       cliente_id: venda.cliente_id || null,
       data_venda: venda.data_venda,
       valor_desconto: venda.valor_desconto || 0,
       valor_frete: venda.valor_frete || 0,
-      forma_pagamento: 'dinheiro',
-      condicao_pagamento: 'vista',
-      parcelas: 1,
-      data_primeiro_vencimento: dataVenc.toISOString().split('T')[0],
-      conta_bancaria_id: contasBancarias.length > 0 ? contasBancarias[0].id : null,
+      forma_pagamento: venda.forma_pagamento || 'dinheiro',
+      condicao_pagamento: venda.condicao_pagamento || 'vista',
+      parcelas: venda.parcelas || 1,
+      data_primeiro_vencimento: dataVenc,
+      conta_bancaria_id: venda.conta_bancaria_id || (contasBancarias.length > 0 ? contasBancarias[0].id : null),
       baixar_estoque: false,
       observacoes: venda.observacoes || '',
       itens: (venda.itens || []).map((item: any) => ({
@@ -288,6 +298,11 @@ export default function VendasPage() {
         custo_total: totais.custoTotal,
         lucro_bruto: totais.lucro,
         margem_lucro: totais.margem,
+        forma_pagamento: form.forma_pagamento,
+        condicao_pagamento: form.condicao_pagamento,
+        parcelas: form.condicao_pagamento === 'parcelado' ? form.parcelas : 1,
+        data_primeiro_vencimento: form.condicao_pagamento !== 'vista' ? form.data_primeiro_vencimento : null,
+        conta_bancaria_id: form.conta_bancaria_id,
         observacoes: form.observacoes,
         status: 'concluida'
       }
@@ -309,6 +324,11 @@ export default function VendasPage() {
         // EDIÇÃO: Recalcular valor_total de cada item e atualizar
         await updateVenda(selectedVenda.id, vendaData, itensParaSalvar)
         vendaId = selectedVenda.id
+        
+        // Se o total mudou, atualizar contas a receber vinculadas
+        if (totais.total !== selectedVenda.valor_total) {
+          await atualizarContasReceberVenda(vendaId, totais.total)
+        }
         
         // Baixar estoque na edição apenas se checkbox marcado
         if (form.baixar_estoque) {
@@ -393,6 +413,130 @@ export default function VendasPage() {
       await loadData()
     } catch (error) {
       console.error('Erro ao excluir:', error)
+    }
+  }
+
+  // === BAIXA FINANCEIRA DA VENDA ===
+  
+  const handleAbrirBaixa = async (venda: Venda) => {
+    setSelectedVenda(venda)
+    setLoadingBaixa(true)
+    setIsBaixaModalOpen(true)
+    setBaixaDate(new Date().toISOString().split('T')[0])
+    setBaixaContaId(null)
+    
+    try {
+      const contas = await fetchContasReceberByVendaId(venda.id)
+      setContasReceberVenda(contas)
+    } catch (err) {
+      console.error('Erro ao buscar contas a receber:', err)
+      setContasReceberVenda([])
+    } finally {
+      setLoadingBaixa(false)
+    }
+  }
+
+  const handleConfirmarBaixa = async (contaReceberId: number) => {
+    if (!baixaDate) {
+      alert('Informe a data do recebimento')
+      return
+    }
+
+    setProcessandoBaixa(true)
+    try {
+      const conta = contasReceberVenda.find(c => c.id === contaReceberId)
+      if (!conta) throw new Error('Conta não encontrada')
+
+      // Atualizar conta a receber como recebida
+      await updateContaReceber(contaReceberId, {
+        status: 'recebido',
+        data_recebimento: baixaDate,
+        valor_recebido: conta.valor
+      })
+
+      // Criar lançamento financeiro
+      if (conta.conta_bancaria_id) {
+        await createLancamentoFinanceiro({
+          conta_id: conta.conta_bancaria_id,
+          tipo: 'receita',
+          valor: conta.valor,
+          data_lancamento: baixaDate,
+          descricao: conta.descricao,
+          categoria_id: conta.categoria_id || undefined,
+          cliente_id: conta.cliente_id || undefined,
+          venda_id: selectedVenda?.id,
+          conciliado: false
+        })
+      }
+
+      // Recarregar contas a receber da venda
+      const contasAtualizadas = await fetchContasReceberByVendaId(selectedVenda!.id)
+      setContasReceberVenda(contasAtualizadas)
+      
+      // Verificar se todas as parcelas foram recebidas
+      const todasRecebidas = contasAtualizadas.every(c => c.status === 'recebido')
+      if (todasRecebidas && contasAtualizadas.length > 0) {
+        // Atualizar status da venda (opcionalmente poderia ter um 'pago' mas mantemos 'concluida')
+      }
+      
+      await loadData()
+    } catch (err) {
+      console.error('Erro ao dar baixa:', err)
+      alert('Erro ao dar baixa: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setProcessandoBaixa(false)
+    }
+  }
+
+  const handleAnularBaixaVenda = async (contaReceberId: number) => {
+    if (!confirm('Deseja anular o recebimento desta parcela? O lançamento financeiro vinculado será removido.')) return
+
+    setProcessandoBaixa(true)
+    try {
+      const conta = contasReceberVenda.find(c => c.id === contaReceberId)
+      if (!conta) throw new Error('Conta não encontrada')
+
+      // Verificar vencimento para definir status
+      const hoje = new Date()
+      hoje.setHours(0, 0, 0, 0)
+      const vencimento = new Date(conta.data_vencimento + 'T00:00:00')
+      const novoStatus = vencimento < hoje ? 'vencido' : 'pendente'
+
+      // Voltar para pendente
+      await updateContaReceber(contaReceberId, {
+        status: novoStatus as any,
+        data_recebimento: null,
+        valor_recebido: 0
+      })
+
+      // Remover lançamento financeiro associado
+      if (conta.conta_bancaria_id && conta.data_recebimento) {
+        const { data: lancamentos } = await supabase
+          .from('lancamentos_financeiros')
+          .select('id')
+          .eq('conta_id', conta.conta_bancaria_id)
+          .eq('tipo', 'receita')
+          .eq('valor', conta.valor)
+          .eq('data_lancamento', conta.data_recebimento)
+        
+        if (lancamentos && lancamentos.length > 0) {
+          const ultimoLancamento = lancamentos[lancamentos.length - 1]
+          await supabase
+            .from('lancamentos_financeiros')
+            .delete()
+            .eq('id', ultimoLancamento.id)
+        }
+      }
+
+      // Recarregar
+      const contasAtualizadas = await fetchContasReceberByVendaId(selectedVenda!.id)
+      setContasReceberVenda(contasAtualizadas)
+      await loadData()
+    } catch (err) {
+      console.error('Erro ao anular baixa:', err)
+      alert('Erro ao anular: ' + (err instanceof Error ? err.message : 'Erro desconhecido'))
+    } finally {
+      setProcessandoBaixa(false)
     }
   }
 
@@ -1102,6 +1246,13 @@ export default function VendasPage() {
                     <td>
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
+                          onClick={() => handleAbrirBaixa(venda)}
+                          className="p-2 hover:bg-green-500/20 rounded-lg transition-colors"
+                          title="Baixa Financeira"
+                        >
+                          <DollarSign className="w-4 h-4 text-green-400" />
+                        </button>
+                        <button
                           onClick={() => openViewVenda(venda)}
                           className="p-2 hover:bg-dark-600 rounded-lg transition-colors"
                           title="Visualizar"
@@ -1516,7 +1667,7 @@ export default function VendasPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <p className="text-dark-400 text-sm">Cliente</p>
                 {selectedVenda.cliente_id ? (
@@ -1538,6 +1689,34 @@ export default function VendasPage() {
                 <p className="text-dark-400 text-sm">Data</p>
                 <p className="text-white font-medium">{formatDate(selectedVenda.data_venda)}</p>
               </div>
+              <div>
+                <p className="text-dark-400 text-sm">Forma de Pagamento</p>
+                <p className="text-white font-medium capitalize">{selectedVenda.forma_pagamento || 'Não informado'}</p>
+              </div>
+              <div>
+                <p className="text-dark-400 text-sm">Condição</p>
+                <p className="text-white font-medium capitalize">
+                  {selectedVenda.condicao_pagamento === 'vista' ? 'À Vista' : 
+                   selectedVenda.condicao_pagamento === 'prazo' ? 'A Prazo' : 
+                   selectedVenda.condicao_pagamento === 'parcelado' ? `Parcelado (${selectedVenda.parcelas || 1}x)` : 
+                   'Não informado'}
+                </p>
+              </div>
+              {selectedVenda.data_primeiro_vencimento && (
+                <div>
+                  <p className="text-dark-400 text-sm">1º Vencimento</p>
+                  <p className="text-white font-medium">{formatDate(selectedVenda.data_primeiro_vencimento)}</p>
+                </div>
+              )}
+              {selectedVenda.conta_bancaria_id && (
+                <div>
+                  <p className="text-dark-400 text-sm">Conta Bancária</p>
+                  <p className="text-white font-medium flex items-center gap-1">
+                    <Building2 className="w-3.5 h-3.5 text-dark-400" />
+                    {contasBancarias.find(c => c.id === selectedVenda.conta_bancaria_id)?.nome || 'N/A'}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1595,6 +1774,16 @@ export default function VendasPage() {
             )}
 
             <div className="flex flex-wrap justify-end gap-3">
+              <Button
+                variant="secondary"
+                leftIcon={<DollarSign className="w-4 h-4" />}
+                onClick={() => {
+                  setIsViewModalOpen(false)
+                  handleAbrirBaixa(selectedVenda)
+                }}
+              >
+                Baixa Financeira
+              </Button>
               {selectedVenda.nota_fiscal_emitida ? (
                 <Button 
                   variant="secondary" 
@@ -1838,6 +2027,166 @@ export default function VendasPage() {
         onClose={() => setProdutoModalOpen(false)} 
         produtoId={selectedProdutoId} 
       />
+
+      {/* Modal Baixa Financeira */}
+      <Modal
+        isOpen={isBaixaModalOpen}
+        onClose={() => setIsBaixaModalOpen(false)}
+        title={`Baixa Financeira — Venda #${selectedVenda?.numero || selectedVenda?.id}`}
+        size="lg"
+      >
+        {loadingBaixa ? (
+          <div className="flex items-center justify-center py-8">
+            <LoadingSpinner />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Resumo da venda */}
+            {selectedVenda && (
+              <div className="flex items-center justify-between p-3 rounded-lg bg-dark-800/50 border border-dark-600">
+                <div>
+                  <p className="text-sm text-dark-400">Valor Total da Venda</p>
+                  <p className="text-xl font-bold text-green-400">{formatCurrency(selectedVenda.valor_total || 0)}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm text-dark-400">Condição</p>
+                  <p className="text-white font-medium capitalize">
+                    {selectedVenda.condicao_pagamento === 'vista' ? 'À Vista' : 
+                     selectedVenda.condicao_pagamento === 'prazo' ? 'A Prazo' : 
+                     selectedVenda.condicao_pagamento === 'parcelado' ? `Parcelado (${selectedVenda.parcelas || 1}x)` : 
+                     selectedVenda.forma_pagamento || 'N/A'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Data de recebimento */}
+            <div>
+              <label className="block text-sm text-dark-400 mb-1">Data do Recebimento</label>
+              <input
+                type="date"
+                value={baixaDate}
+                onChange={(e) => setBaixaDate(e.target.value)}
+                className="input w-full max-w-xs"
+              />
+            </div>
+
+            {contasReceberVenda.length > 0 ? (
+              <>
+                {/* Resumo de status */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-2 text-center rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                    <p className="text-lg font-bold text-yellow-400">
+                      {contasReceberVenda.filter(c => c.status === 'pendente' || c.status === 'vencido').length}
+                    </p>
+                    <p className="text-xs text-dark-400">Pendentes</p>
+                  </div>
+                  <div className="p-2 text-center rounded-lg bg-green-500/10 border border-green-500/20">
+                    <p className="text-lg font-bold text-green-400">
+                      {contasReceberVenda.filter(c => c.status === 'recebido').length}
+                    </p>
+                    <p className="text-xs text-dark-400">Recebidas</p>
+                  </div>
+                  <div className="p-2 text-center rounded-lg bg-blue-500/10 border border-blue-500/20">
+                    <p className="text-lg font-bold text-blue-400">
+                      {formatCurrency(contasReceberVenda.filter(c => c.status === 'recebido').reduce((acc, c) => acc + (c.valor_recebido || 0), 0))}
+                    </p>
+                    <p className="text-xs text-dark-400">Total Recebido</p>
+                  </div>
+                </div>
+
+                {/* Tabela de parcelas */}
+                <div className="max-h-72 overflow-y-auto rounded-lg border border-dark-600">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-dark-700">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-dark-400 font-medium">Parcela</th>
+                        <th className="text-left px-3 py-2 text-dark-400 font-medium">Vencimento</th>
+                        <th className="text-right px-3 py-2 text-dark-400 font-medium">Valor</th>
+                        <th className="text-center px-3 py-2 text-dark-400 font-medium">Status</th>
+                        <th className="text-center px-3 py-2 text-dark-400 font-medium">Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contasReceberVenda.map((conta, idx) => (
+                        <tr key={conta.id} className="border-t border-dark-600 hover:bg-dark-700/50 transition-colors">
+                          <td className="px-3 py-2.5 text-white font-medium">
+                            {idx + 1}/{contasReceberVenda.length}
+                          </td>
+                          <td className="px-3 py-2.5 text-dark-300">
+                            {formatDate(conta.data_vencimento)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-white font-medium">
+                            {formatCurrency(conta.valor)}
+                          </td>
+                          <td className="px-3 py-2.5 text-center">
+                            <Badge variant={
+                              conta.status === 'recebido' ? 'success' :
+                              conta.status === 'vencido' ? 'danger' :
+                              conta.status === 'parcial' ? 'info' : 'warning'
+                            }>
+                              {conta.status === 'recebido' ? 'Recebido' :
+                               conta.status === 'vencido' ? 'Vencido' :
+                               conta.status === 'parcial' ? 'Parcial' : 'Pendente'}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-2.5 text-center">
+                            {(conta.status === 'pendente' || conta.status === 'vencido') ? (
+                              <button
+                                onClick={() => handleConfirmarBaixa(conta.id)}
+                                disabled={processandoBaixa || !baixaDate}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-500/15 text-green-400 hover:bg-green-500/25 border border-green-500/20 transition-all disabled:opacity-50"
+                              >
+                                {processandoBaixa ? (
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <CheckCircle className="w-3 h-3" />
+                                )}
+                                Dar Baixa
+                              </button>
+                            ) : conta.status === 'recebido' ? (
+                              <button
+                                onClick={() => handleAnularBaixaVenda(conta.id)}
+                                disabled={processandoBaixa}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-all disabled:opacity-50"
+                              >
+                                <X className="w-3 h-3" />
+                                Anular
+                              </button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-6 space-y-2">
+                {selectedVenda?.condicao_pagamento === 'vista' ? (
+                  <>
+                    <Banknote className="w-10 h-10 text-green-400 mx-auto" />
+                    <p className="text-dark-400 text-sm">Venda à vista — o lançamento financeiro já foi criado automaticamente.</p>
+                    <p className="text-dark-500 text-xs">Não há parcelas a receber para esta venda.</p>
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle className="w-10 h-10 text-yellow-400 mx-auto" />
+                    <p className="text-dark-400 text-sm">Nenhuma conta a receber vinculada a esta venda.</p>
+                    <p className="text-dark-500 text-xs">Edite a venda para gerar as parcelas.</p>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <Button variant="secondary" onClick={() => setIsBaixaModalOpen(false)}>
+                Fechar
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

@@ -405,6 +405,11 @@ export interface Venda {
   numero_nf: string | null
   chave_nf: string | null
   valor_impostos: number
+  forma_pagamento: string | null
+  condicao_pagamento: string | null
+  parcelas: number
+  data_primeiro_vencimento: string | null
+  conta_bancaria_id: number | null
   status: string
   observacoes: string | null
   created_at?: string
@@ -3291,6 +3296,56 @@ export async function updateContaReceber(id: number, updates: Partial<ContaReceb
   return data
 }
 
+/**
+ * Busca contas a receber vinculadas a uma venda específica
+ */
+export async function fetchContasReceberByVendaId(vendaId: number): Promise<ContaReceber[]> {
+  const { data, error } = await supabase
+    .from('contas_receber')
+    .select('*, cliente:clientes(*)')
+    .eq('venda_id', vendaId)
+    .order('data_vencimento', { ascending: true })
+
+  if (error) throw new Error(error.message)
+  return data || []
+}
+
+/**
+ * Atualiza os valores das contas a receber vinculadas a uma venda quando o total muda.
+ * Recalcula proporcionalmente o valor de cada parcela.
+ */
+export async function atualizarContasReceberVenda(vendaId: number, novoTotal: number): Promise<void> {
+  const contas = await fetchContasReceberByVendaId(vendaId)
+  if (!contas || contas.length === 0) return
+
+  // Só atualizar contas pendentes ou vencidas (não mexer nas já recebidas)
+  const contasPendentes = contas.filter(c => c.status === 'pendente' || c.status === 'vencido')
+  const contasRecebidas = contas.filter(c => c.status === 'recebido' || c.status === 'parcial')
+  
+  // Calcular valor já recebido
+  const totalJaRecebido = contasRecebidas.reduce((acc, c) => acc + (c.valor_recebido || 0), 0)
+  
+  // Valor restante a distribuir entre pendentes
+  const valorRestante = novoTotal - totalJaRecebido
+  
+  if (contasPendentes.length === 0) return
+  
+  const valorParcela = Math.round((valorRestante / contasPendentes.length) * 100) / 100
+  const valorUltimaParcela = valorRestante - (valorParcela * (contasPendentes.length - 1))
+
+  for (let i = 0; i < contasPendentes.length; i++) {
+    const valor = i === contasPendentes.length - 1 ? valorUltimaParcela : valorParcela
+    await updateContaReceber(contasPendentes[i].id, {
+      valor: valor > 0 ? valor : 0,
+      descricao: contasPendentes[i].descricao.replace(/R\$\s*[\d.,]+/, formatarMoedaSimples(valor > 0 ? valor : 0))
+    })
+  }
+}
+
+function formatarMoedaSimples(valor: number): string {
+  return `R$ ${valor.toFixed(2).replace('.', ',')}`
+}
+
 export async function receberConta(id: number, valorRecebido: number, dataRecebimento: string, formaPagamento: string): Promise<ContaReceber> {
   const { data: conta } = await supabase
     .from('contas_receber')
@@ -3471,6 +3526,10 @@ export interface ResultadoSincronizacao {
     valor: number
     status: 'conciliado' | 'ja_conciliado' | 'sem_correspondencia'
     lancamentoId?: number
+    contaId?: number
+    tipo?: 'pagar' | 'receber'
+    contaBancariaId?: number
+    dataPagamento?: string
   }[]
 }
 
@@ -3520,7 +3579,11 @@ export async function sincronizarBoletosComExtrato(
       resultado.detalhes.push({
         descricao: conta.descricao,
         valor: conta.valor,
-        status: 'sem_correspondencia'
+        status: 'sem_correspondencia',
+        contaId: conta.id,
+        tipo,
+        contaBancariaId: undefined,
+        dataPagamento: conta[campoData] || undefined
       })
       continue
     }
@@ -3548,7 +3611,11 @@ export async function sincronizarBoletosComExtrato(
       resultado.detalhes.push({
         descricao: conta.descricao,
         valor: conta.valor,
-        status: 'sem_correspondencia'
+        status: 'sem_correspondencia',
+        contaId: conta.id,
+        tipo,
+        contaBancariaId: contaIdBancaria,
+        dataPagamento: dataPgto || undefined
       })
       continue
     }
@@ -3623,6 +3690,92 @@ export async function sincronizarBoletosComExtrato(
   }
 
   return resultado
+}
+
+/**
+ * Busca lançamentos candidatos do extrato para vinculação manual.
+ * Retorna lançamentos não conciliados da mesma conta bancária, opcionalmente filtrados.
+ */
+export async function buscarLancamentosParaVincular(params: {
+  contaBancariaId?: number
+  tipo: 'pagar' | 'receber'
+  busca?: string
+}): Promise<LancamentoFinanceiro[]> {
+  const tiposLanc = params.tipo === 'pagar' ? ['despesa', 'saida'] : ['receita', 'entrada']
+  
+  let query = supabase
+    .from('lancamentos_financeiros')
+    .select('*')
+    .eq('conciliado', false)
+    .in('tipo', tiposLanc)
+    .order('data_lancamento', { ascending: false })
+    .limit(100)
+
+  if (params.contaBancariaId) {
+    query = query.eq('conta_id', params.contaBancariaId)
+  }
+
+  if (params.busca) {
+    query = query.ilike('descricao', `%${params.busca}%`)
+  }
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  return data || []
+}
+
+/**
+ * Vincula manualmente uma conta (pagar/receber) com um lançamento do extrato.
+ * Marca o lançamento como conciliado e remove duplicados manuais se houver.
+ */
+export async function vincularManualmente(
+  lancamentoId: number,
+  contaId: number,
+  tipo: 'pagar' | 'receber'
+): Promise<void> {
+  // 1. Marcar o lançamento como conciliado
+  const { error: updateError } = await supabase
+    .from('lancamentos_financeiros')
+    .update({ conciliado: true, updated_at: new Date().toISOString() })
+    .eq('id', lancamentoId)
+
+  if (updateError) throw new Error(updateError.message)
+
+  // 2. Buscar info do lançamento vinculado para encontrar possíveis duplicados
+  const { data: lancVinculado } = await supabase
+    .from('lancamentos_financeiros')
+    .select('*')
+    .eq('id', lancamentoId)
+    .single()
+
+  if (lancVinculado) {
+    // 3. Buscar duplicados manuais (sem ofx_fitid) com mesmo valor, conta e data próxima
+    const dataBase = new Date(lancVinculado.data_lancamento + 'T00:00:00')
+    const dataInicio = new Date(dataBase)
+    dataInicio.setDate(dataInicio.getDate() - 3)
+    const dataFim = new Date(dataBase)
+    dataFim.setDate(dataFim.getDate() + 3)
+
+    const { data: duplicados } = await supabase
+      .from('lancamentos_financeiros')
+      .select('*')
+      .eq('conta_id', lancVinculado.conta_id)
+      .eq('valor', lancVinculado.valor)
+      .neq('id', lancamentoId)
+      .is('ofx_fitid', null)
+      .gte('data_lancamento', dataInicio.toISOString().split('T')[0])
+      .lte('data_lancamento', dataFim.toISOString().split('T')[0])
+
+    // Remove duplicados manuais encontrados
+    if (duplicados && duplicados.length > 0) {
+      for (const dup of duplicados) {
+        await supabase
+          .from('lancamentos_financeiros')
+          .delete()
+          .eq('id', dup.id)
+      }
+    }
+  }
 }
 
 // ==================== FUNÇÕES - VENDAS ====================
@@ -3955,9 +4108,16 @@ export async function updateVenda(id: number, venda: Partial<Venda>, itens?: Par
 }
 
 export async function deleteVenda(id: number): Promise<void> {
-  // Primeiro deletar itens
+  // 1. Deletar lançamentos financeiros vinculados à venda
+  await supabase.from('lancamentos_financeiros').delete().eq('venda_id', id)
+
+  // 2. Deletar contas a receber vinculadas à venda (parcelas)
+  await supabase.from('contas_receber').delete().eq('venda_id', id)
+
+  // 3. Deletar itens da venda
   await supabase.from('itens_venda').delete().eq('venda_id', id)
   
+  // 4. Deletar a venda
   const { error } = await supabase.from('vendas').delete().eq('id', id)
   if (error) throw new Error(error.message)
 }
